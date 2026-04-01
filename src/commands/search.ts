@@ -1,31 +1,41 @@
 import { Command } from "commander";
-import { loadAllProjects } from "../loader/index.js";
-import { getFormatter, type Format } from "../formatter/index.js";
+
+const API_BASE = "http://localhost:3000";
 
 export const searchCommand = new Command("search")
   .description("Search for projects by keyword")
   .argument("<query>", "Search query")
-  .action((query: string, _opts: unknown, cmd: Command) => {
-    const format = cmd.optsWithGlobals().format as Format;
-    const formatter = getFormatter(format);
-    const projects = loadAllProjects();
-    const q = query.toLowerCase();
+  .action(async (query: string, _opts: unknown, cmd: Command) => {
+    const format = cmd.optsWithGlobals().format as string;
 
-    const words = q.split(/\s+/).filter(Boolean);
-    const scored = [...projects.values()]
-      .map((p) => {
-        const haystack = `${p.name} ${p.description} ${p.resources.map((r) => r.name).join(" ")} ${p.resources.flatMap((r) => r.actions.map((a) => a.name)).join(" ")}`.toLowerCase();
-        const hits = words.filter((w) => haystack.includes(w)).length;
-        return { project: p, hits };
-      })
-      .filter((s) => s.hits > 0)
-      .sort((a, b) => b.hits - a.hits);
-    const matched = scored.map((s) => s.project);
+    let data: { name: string; description: string; resources: string[] }[];
+    try {
+      const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(query)}`);
+      data = (await res.json()) as typeof data;
+      if (!res.ok) {
+        console.error((data as unknown as { error: string }).error);
+        process.exitCode = 1;
+        return;
+      }
+    } catch {
+      console.error("Failed to connect to postagent server.");
+      process.exitCode = 1;
+      return;
+    }
 
-    if (matched.length === 0) {
+    if (data.length === 0) {
       console.log("No projects found.");
       return;
     }
 
-    console.log(formatter.formatProjectList(matched));
+    if (format === "json") {
+      console.log(JSON.stringify(data, null, 2));
+      return;
+    }
+
+    console.log(
+      data
+        .map((p) => `${p.name}\n  ${p.description}\n  Resources: ${p.resources.join(", ")}`)
+        .join("\n\n"),
+    );
   });
