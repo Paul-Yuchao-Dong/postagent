@@ -1,0 +1,1282 @@
+openapi: 3.1.0
+info:
+  title: Notion API
+  description: >
+    Notion API for managing Pages, Users, and Comments.
+    Authentication uses Bearer tokens provided when creating an integration.
+    For public OAuth integrations, tokens are obtained via the OAuth flow (POST /v1/oauth/token).
+    All requests must include the `Notion-Version` header.
+  version: "2026-03-11"
+  contact:
+    name: Notion
+    url: https://developers.notion.com
+
+servers:
+  - url: https://api.notion.com
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Bearer token authentication. Tokens are obtained by creating an internal integration
+        (via https://www.notion.so/my-integrations) or through the OAuth flow for public integrations.
+        Pass as: `Authorization: Bearer <token>`
+    BasicAuth:
+      type: http
+      scheme: basic
+      description: >
+        Used only for the OAuth token exchange endpoint (POST /v1/oauth/token).
+        Encode `client_id:client_secret` as Base64 and pass as `Authorization: Basic <encoded>`.
+
+  parameters:
+    NotionVersion:
+      name: Notion-Version
+      in: header
+      required: true
+      schema:
+        type: string
+        enum:
+          - "2026-03-11"
+      description: The API version to use for this request.
+
+  schemas:
+    # ── Shared / Reusable ──────────────────────────────────────────────
+
+    PartialUser:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [user]
+        id:
+          type: string
+          format: uuid
+      required: [object, id]
+
+    RichTextObject:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [text, mention, equation]
+        text:
+          type: object
+          properties:
+            content:
+              type: string
+            link:
+              type: object
+              nullable: true
+              properties:
+                url:
+                  type: string
+        annotations:
+          type: object
+          properties:
+            bold:
+              type: boolean
+            italic:
+              type: boolean
+            strikethrough:
+              type: boolean
+            underline:
+              type: boolean
+            code:
+              type: boolean
+            color:
+              type: string
+        plain_text:
+          type: string
+        href:
+          type: string
+          nullable: true
+
+    EmojiIcon:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [emoji]
+        emoji:
+          type: string
+
+    ExternalFile:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [external]
+        external:
+          type: object
+          properties:
+            url:
+              type: string
+
+    NotionFile:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [file]
+        file:
+          type: object
+          properties:
+            url:
+              type: string
+            expiry_time:
+              type: string
+              format: date-time
+
+    PageParent:
+      oneOf:
+        - type: object
+          title: PageIdParent
+          properties:
+            type:
+              type: string
+              enum: [page_id]
+            page_id:
+              type: string
+              format: uuid
+          required: [type, page_id]
+        - type: object
+          title: DatabaseIdParent
+          properties:
+            type:
+              type: string
+              enum: [database_id]
+            database_id:
+              type: string
+              format: uuid
+          required: [type, database_id]
+        - type: object
+          title: DataSourceIdParent
+          properties:
+            type:
+              type: string
+              enum: [data_source_id]
+            data_source_id:
+              type: string
+              format: uuid
+          required: [type, data_source_id]
+        - type: object
+          title: WorkspaceParent
+          properties:
+            type:
+              type: string
+              enum: [workspace]
+            workspace:
+              type: boolean
+          required: [type, workspace]
+
+    # ── Page ───────────────────────────────────────────────────────────
+
+    Page:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [page]
+        id:
+          type: string
+          format: uuid
+        created_time:
+          type: string
+          format: date-time
+        last_edited_time:
+          type: string
+          format: date-time
+        created_by:
+          $ref: "#/components/schemas/PartialUser"
+        last_edited_by:
+          $ref: "#/components/schemas/PartialUser"
+        in_trash:
+          type: boolean
+        is_archived:
+          type: boolean
+        is_locked:
+          type: boolean
+        url:
+          type: string
+        public_url:
+          type: string
+          nullable: true
+        parent:
+          $ref: "#/components/schemas/PageParent"
+        properties:
+          type: object
+          additionalProperties: true
+        icon:
+          oneOf:
+            - $ref: "#/components/schemas/EmojiIcon"
+            - $ref: "#/components/schemas/NotionFile"
+            - $ref: "#/components/schemas/ExternalFile"
+          nullable: true
+        cover:
+          oneOf:
+            - $ref: "#/components/schemas/NotionFile"
+            - $ref: "#/components/schemas/ExternalFile"
+          nullable: true
+      required:
+        - object
+        - id
+        - created_time
+        - last_edited_time
+        - in_trash
+        - is_archived
+        - is_locked
+        - url
+        - public_url
+        - parent
+        - properties
+        - created_by
+        - last_edited_by
+
+    # ── User ───────────────────────────────────────────────────────────
+
+    PersonUser:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [user]
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+        avatar_url:
+          type: string
+          nullable: true
+        type:
+          type: string
+          enum: [person]
+        person:
+          type: object
+          properties:
+            email:
+              type: string
+              format: email
+      required: [object, id, type, person]
+
+    BotUser:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [user]
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+        avatar_url:
+          type: string
+          nullable: true
+        type:
+          type: string
+          enum: [bot]
+        bot:
+          type: object
+          properties:
+            owner:
+              type: object
+              properties:
+                type:
+                  type: string
+                  enum: [workspace, user]
+                workspace:
+                  type: boolean
+            workspace_name:
+              type: string
+              nullable: true
+            workspace_id:
+              type: string
+      required: [object, id, type, bot]
+
+    User:
+      oneOf:
+        - $ref: "#/components/schemas/PersonUser"
+        - $ref: "#/components/schemas/BotUser"
+
+    UserList:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [list]
+        type:
+          type: string
+          enum: [user]
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+        has_more:
+          type: boolean
+        next_cursor:
+          type: string
+          nullable: true
+      required: [object, results, has_more, next_cursor]
+
+    # ── Comment ────────────────────────────────────────────────────────
+
+    CommentParent:
+      oneOf:
+        - type: object
+          title: PageParent
+          properties:
+            type:
+              type: string
+              enum: [page_id]
+            page_id:
+              type: string
+              format: uuid
+          required: [type, page_id]
+        - type: object
+          title: BlockParent
+          properties:
+            type:
+              type: string
+              enum: [block_id]
+            block_id:
+              type: string
+              format: uuid
+          required: [type, block_id]
+
+    CommentAttachment:
+      type: object
+      properties:
+        category:
+          type: string
+          enum: [image, audio, video, file]
+        file:
+          type: object
+          properties:
+            url:
+              type: string
+            expiry_time:
+              type: string
+              format: date-time
+
+    CommentDisplayName:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [integration, user, custom]
+        resolved_name:
+          type: string
+
+    Comment:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [comment]
+        id:
+          type: string
+          format: uuid
+        parent:
+          $ref: "#/components/schemas/CommentParent"
+        discussion_id:
+          type: string
+          format: uuid
+        created_time:
+          type: string
+          format: date-time
+        last_edited_time:
+          type: string
+          format: date-time
+        created_by:
+          $ref: "#/components/schemas/PartialUser"
+        rich_text:
+          type: array
+          items:
+            $ref: "#/components/schemas/RichTextObject"
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/CommentAttachment"
+        display_name:
+          $ref: "#/components/schemas/CommentDisplayName"
+      required:
+        - object
+        - id
+        - parent
+        - discussion_id
+        - created_time
+        - last_edited_time
+        - created_by
+        - rich_text
+
+    CommentList:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [list]
+        type:
+          type: string
+          enum: [comment]
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Comment"
+        has_more:
+          type: boolean
+        next_cursor:
+          type: string
+          format: uuid
+          nullable: true
+      required: [object, results, has_more, next_cursor]
+
+    # ── OAuth Token ────────────────────────────────────────────────────
+
+    OAuthTokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          enum: [bearer]
+        refresh_token:
+          type: string
+          nullable: true
+        bot_id:
+          type: string
+          format: uuid
+        workspace_icon:
+          type: string
+          nullable: true
+        workspace_name:
+          type: string
+          nullable: true
+        workspace_id:
+          type: string
+          format: uuid
+        owner:
+          $ref: "#/components/schemas/User"
+        duplicated_template_id:
+          type: string
+          format: uuid
+          nullable: true
+        request_id:
+          type: string
+          format: uuid
+      required:
+        - access_token
+        - token_type
+        - refresh_token
+        - bot_id
+        - workspace_icon
+        - workspace_name
+        - workspace_id
+        - owner
+        - duplicated_template_id
+
+    # ── Error ──────────────────────────────────────────────────────────
+
+    Error:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [error]
+        status:
+          type: integer
+        code:
+          type: string
+        message:
+          type: string
+      required: [object, status, code, message]
+
+    # ── Property Item ──────────────────────────────────────────────────
+
+    PropertyItem:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [property_item]
+        id:
+          type: string
+        type:
+          type: string
+      required: [object, id, type]
+      additionalProperties: true
+
+paths:
+  # ════════════════════════════════════════════════════════════════════
+  #  Authentication
+  # ════════════════════════════════════════════════════════════════════
+
+  /v1/oauth/token:
+    post:
+      operationId: createToken
+      summary: Create a token
+      description: >
+        Creates an access token that a third-party service can use to authenticate
+        with Notion. Used in the OAuth flow for public integrations.
+        Uses Basic auth with client_id:client_secret.
+      tags: [Authentication]
+      security:
+        - BasicAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NotionVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                grant_type:
+                  type: string
+                  enum: [authorization_code]
+                code:
+                  type: string
+                  description: The authorization code received from the OAuth flow.
+                redirect_uri:
+                  type: string
+                  description: >
+                    Required if redirect_uri was set in the Authorization URL
+                    or if there are multiple redirect URIs configured.
+                external_account:
+                  type: object
+                  properties:
+                    key:
+                      type: string
+                    name:
+                      type: string
+              required: [grant_type, code]
+      responses:
+        "200":
+          description: Token created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthTokenResponse"
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ════════════════════════════════════════════════════════════════════
+  #  Pages
+  # ════════════════════════════════════════════════════════════════════
+
+  /v1/pages:
+    post:
+      operationId: createPage
+      summary: Create a page
+      description: >
+        Creates a new page as a child of an existing page or data source.
+        If the parent is a data source, property keys must match the data source schema.
+        If the parent is a page, only the `title` property is valid.
+      tags: [Pages]
+      parameters:
+        - $ref: "#/components/parameters/NotionVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                parent:
+                  oneOf:
+                    - type: object
+                      title: PageIdParent
+                      properties:
+                        page_id:
+                          type: string
+                          format: uuid
+                      required: [page_id]
+                    - type: object
+                      title: DatabaseIdParent
+                      properties:
+                        database_id:
+                          type: string
+                          format: uuid
+                      required: [database_id]
+                    - type: object
+                      title: DataSourceIdParent
+                      properties:
+                        data_source_id:
+                          type: string
+                          format: uuid
+                      required: [data_source_id]
+                    - type: object
+                      title: WorkspaceParent
+                      properties:
+                        workspace:
+                          type: boolean
+                          enum: [true]
+                      required: [workspace]
+                  description: >
+                    The parent of the new page. Provide page_id, database_id,
+                    data_source_id, or workspace: true.
+                properties:
+                  type: object
+                  additionalProperties: true
+                  description: >
+                    Property values for the new page. Must match parent schema
+                    if parent is a data source.
+                icon:
+                  oneOf:
+                    - $ref: "#/components/schemas/EmojiIcon"
+                    - $ref: "#/components/schemas/ExternalFile"
+                cover:
+                  oneOf:
+                    - $ref: "#/components/schemas/ExternalFile"
+                children:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    additionalProperties: true
+                  description: Block children content. Mutually exclusive with `markdown`.
+                markdown:
+                  type: string
+                  description: >
+                    Page content as Notion-flavored Markdown.
+                    Mutually exclusive with `children`/`content`.
+                    Newlines must be encoded as \n in JSON.
+                template:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum: [none, default, template_id]
+                    template_id:
+                      type: string
+                      format: uuid
+                    timezone:
+                      type: string
+                      description: IANA timezone string (e.g. America/New_York).
+              required: [properties]
+      responses:
+        "200":
+          description: Page created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Page"
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden — integration lacks insert content capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Parent not found or not accessible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/pages/{page_id}:
+    get:
+      operationId: retrievePage
+      summary: Retrieve a page
+      description: >
+        Retrieves a Page object using the ID specified.
+        Returns page properties, not page content.
+        To fetch page content, use the Retrieve block children endpoint.
+        Properties are limited to 25 references per property.
+      tags: [Pages]
+      parameters:
+        - $ref: "#/components/parameters/NotionVersion"
+        - name: page_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the page to retrieve.
+        - name: filter_properties
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+            maxItems: 100
+          description: Property IDs to include in the response. Omit to return all.
+      responses:
+        "200":
+          description: Page retrieved successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Page"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden — integration lacks read content capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Page not found or not accessible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    patch:
+      operationId: updatePage
+      summary: Update a page
+      description: >
+        Updates page properties, icon, cover, trash status, or lock status.
+        To add content, use the Append block children API instead.
+        A page's parent cannot be changed.
+      tags: [Pages]
+      parameters:
+        - $ref: "#/components/parameters/NotionVersion"
+        - name: page_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the page to update.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                properties:
+                  type: object
+                  additionalProperties: true
+                  description: >
+                    Property values to update. Keys must match parent data source schema.
+                icon:
+                  oneOf:
+                    - $ref: "#/components/schemas/EmojiIcon"
+                    - $ref: "#/components/schemas/ExternalFile"
+                  nullable: true
+                cover:
+                  oneOf:
+                    - $ref: "#/components/schemas/ExternalFile"
+                  nullable: true
+                is_locked:
+                  type: boolean
+                  description: Lock or unlock the page from editing in Notion UI.
+                in_trash:
+                  type: boolean
+                  description: Set to true to trash the page, false to restore.
+                is_archived:
+                  type: boolean
+                  description: Alias for in_trash.
+                template:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum: [default, template_id]
+                    template_id:
+                      type: string
+                      format: uuid
+                    timezone:
+                      type: string
+                erase_content:
+                  type: boolean
+                  description: >
+                    Delete all block children of the page. Destructive and irreversible via API.
+      responses:
+        "200":
+          description: Page updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Page"
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden — integration lacks update content capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Page not found or not accessible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/pages/{page_id}/properties/{property_id}:
+    get:
+      operationId: retrievePageProperty
+      summary: Retrieve a page property item
+      description: >
+        Retrieves a property_item object for a given page and property.
+        Depending on the property type, returns either a value or a paginated list.
+        Use this endpoint instead of Retrieve a page when a property has more than 25 references.
+      tags: [Pages]
+      parameters:
+        - $ref: "#/components/parameters/NotionVersion"
+        - name: page_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the page.
+        - name: property_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the property.
+        - name: start_cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Cursor for paginated property values (title, rich_text, relation, people).
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            maximum: 100
+          description: Number of items to return per page.
+      responses:
+        "200":
+          description: Property item retrieved successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PropertyItem"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden — integration lacks read content capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Page or property not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ════════════════════════════════════════════════════════════════════
+  #  Users
+  # ════════════════════════════════════════════════════════════════════
+
+  /v1/users:
+    get:
+      operationId: listUsers
+      summary: List all users
+      description: >
+        Returns a paginated list of Users for the workspace.
+        Guests are not included. The API does not support filtering by email or name.
+      tags: [Users]
+      parameters:
+        - $ref: "#/components/parameters/NotionVersion"
+        - name: start_cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Cursor for pagination.
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: number
+            maximum: 100
+          description: Number of users to return. Default 100, max 100.
+      responses:
+        "200":
+          description: Users listed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserList"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden — integration lacks user information capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/users/{user_id}:
+    get:
+      operationId: retrieveUser
+      summary: Retrieve a user
+      description: Retrieves a User using the ID specified.
+      tags: [Users]
+      parameters:
+        - $ref: "#/components/parameters/NotionVersion"
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the user to retrieve.
+      responses:
+        "200":
+          description: User retrieved successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden — integration lacks user information capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/users/me:
+    get:
+      operationId: retrieveBotUser
+      summary: Retrieve your token's bot user
+      description: >
+        Retrieves the bot User associated with the API token provided
+        in the authorization header. The bot will have an `owner` field
+        with information about the person who authorized the integration.
+      tags: [Users]
+      parameters:
+        - $ref: "#/components/parameters/NotionVersion"
+      responses:
+        "200":
+          description: Bot user retrieved successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ════════════════════════════════════════════════════════════════════
+  #  Comments
+  # ════════════════════════════════════════════════════════════════════
+
+  /v1/comments:
+    post:
+      operationId: createComment
+      summary: Create comment
+      description: >
+        Creates a comment on a page, block, or existing discussion thread.
+        Provide either `parent.page_id`, `parent.block_id`, or `discussion_id` — only one.
+        Requires insert comment capabilities.
+      tags: [Comments]
+      parameters:
+        - $ref: "#/components/parameters/NotionVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  title: PageOrBlockComment
+                  properties:
+                    parent:
+                      $ref: "#/components/schemas/CommentParent"
+                    rich_text:
+                      type: array
+                      maxItems: 100
+                      items:
+                        $ref: "#/components/schemas/RichTextObject"
+                    attachments:
+                      type: array
+                      maxItems: 3
+                      items:
+                        $ref: "#/components/schemas/CommentAttachment"
+                    display_name:
+                      $ref: "#/components/schemas/CommentDisplayName"
+                  required: [parent, rich_text]
+                - type: object
+                  title: DiscussionComment
+                  properties:
+                    discussion_id:
+                      type: string
+                      format: uuid
+                    rich_text:
+                      type: array
+                      maxItems: 100
+                      items:
+                        $ref: "#/components/schemas/RichTextObject"
+                    attachments:
+                      type: array
+                      maxItems: 3
+                      items:
+                        $ref: "#/components/schemas/CommentAttachment"
+                    display_name:
+                      $ref: "#/components/schemas/CommentDisplayName"
+                  required: [discussion_id, rich_text]
+      responses:
+        "200":
+          description: Comment created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Comment"
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden — integration lacks insert comment capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Parent page/block not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    get:
+      operationId: listComments
+      summary: List comments
+      description: >
+        Retrieves a list of un-resolved Comment objects from a page or block.
+        Requires read comment capabilities (off by default).
+      tags: [Comments]
+      parameters:
+        - $ref: "#/components/parameters/NotionVersion"
+        - name: block_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Identifier for a Notion block or page.
+        - name: start_cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Cursor for pagination.
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+          description: Number of comments to return. Max 100.
+      responses:
+        "200":
+          description: Comments listed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommentList"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden — integration lacks read comment capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Block/page not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/comments/{comment_id}:
+    get:
+      operationId: retrieveComment
+      summary: Retrieve a comment
+      description: >
+        Retrieves a Comment object by its comment_id.
+        Requires read comment capabilities (off by default).
+      tags: [Comments]
+      parameters:
+        - $ref: "#/components/parameters/NotionVersion"
+        - name: comment_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the comment to retrieve.
+      responses:
+        "200":
+          description: Comment retrieved successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Comment"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden — integration lacks read comment capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Comment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+tags:
+  - name: Authentication
+    description: OAuth token exchange for public integrations.
+  - name: Pages
+    description: Create, retrieve, and update Notion pages.
+  - name: Users
+    description: List and retrieve workspace users.
+  - name: Comments
+    description: Create, retrieve, and list comments on pages and blocks.

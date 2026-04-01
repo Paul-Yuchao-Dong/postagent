@@ -11,10 +11,16 @@ export const searchCommand = new Command("search")
     const projects = loadAllProjects();
     const q = query.toLowerCase();
 
-    const matched = [...projects.values()].filter((p) => {
-      const haystack = `${p.name} ${p.description} ${p.resources.map((r) => r.name).join(" ")}`.toLowerCase();
-      return q.split(/\s+/).every((word) => haystack.includes(word));
-    });
+    const words = q.split(/\s+/).filter(Boolean);
+    const scored = [...projects.values()]
+      .map((p) => {
+        const haystack = `${p.name} ${p.description} ${p.resources.map((r) => r.name).join(" ")} ${p.resources.flatMap((r) => r.actions.map((a) => a.name)).join(" ")}`.toLowerCase();
+        const hits = words.filter((w) => haystack.includes(w)).length;
+        return { project: p, hits };
+      })
+      .filter((s) => s.hits > 0)
+      .sort((a, b) => b.hits - a.hits);
+    const matched = scored.map((s) => s.project);
 
     if (matched.length === 0) {
       console.log("No projects found.");

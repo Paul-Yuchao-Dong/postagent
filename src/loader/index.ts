@@ -185,23 +185,23 @@ function parseSpec(spec: Record<string, unknown>): ProjectInfo {
 
 const projectCache = new Map<string, ProjectInfo>();
 
-function getOutputDir(): string {
-  // Both dev (src/loader/) and build (dist/) need to resolve to <root>/output
+function getExamplesDir(): string {
+  // Both dev (src/loader/) and build (dist/) need to resolve to <root>/examples
   // import.meta.dirname is src/loader in dev, dist in build
   const dir = import.meta.dirname;
-  const candidate = join(dir, "../output");
+  const candidate = join(dir, "../examples");
   try {
     readdirSync(candidate);
     return candidate;
   } catch {
-    return join(dir, "../../output");
+    return join(dir, "../../examples");
   }
 }
 
 export function loadAllProjects(): Map<string, ProjectInfo> {
   if (projectCache.size > 0) return projectCache;
 
-  const dir = getOutputDir();
+  const dir = getExamplesDir();
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"));
