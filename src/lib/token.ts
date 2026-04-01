@@ -2,8 +2,10 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-function getTokenDir(project: string): string {
-  return join(homedir(), ".postagent", project);
+const DEFAULT_PROFILE = "default";
+
+function getTokenDir(project: string, profile?: string): string {
+  return join(homedir(), ".postagent", profile ?? DEFAULT_PROFILE, "default", project);
 }
 
 export async function saveToken(project: string, token: string): Promise<void> {
