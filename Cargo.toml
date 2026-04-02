@@ -1,0 +1,3 @@
+[workspace]
+members = ["packages/postagent-core"]
+resolver = "2"

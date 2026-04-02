@@ -10,3 +10,17 @@ dist/
 .docs/
 
 output/
+
+# Rust
+target/
+
+# Postagent compiled binaries (except .gitkeep)
+packages/postagent/bin/*
+!packages/postagent/bin/.gitkeep
+
+# pnpm
+pnpm-lock.yaml
+
+.claude/
+.agents/
+.agent/
