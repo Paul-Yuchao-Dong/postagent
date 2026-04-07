@@ -1,4 +1,4 @@
 pub mod auth;
-pub mod help;
-pub mod request;
+pub mod manual;
 pub mod search;
+pub mod send;

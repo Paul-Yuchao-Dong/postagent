@@ -13,18 +13,18 @@ fn main() {
 
     let result = match &cli.command {
         Commands::Search { query } => commands::search::run(query, &cli.format),
-        Commands::Help {
+        Commands::Manual {
             project,
             resource,
             action,
         } => {
-            let result = commands::help::run(
+            let result = commands::manual::run(
                 project.as_deref(),
                 resource.as_deref(),
                 action.as_deref(),
                 &cli.format,
             );
-            // Handle the special "show_help" case (help with no args)
+            // Handle the special "show_help" case (manual with no args)
             if let Err(ref e) = result {
                 if e.to_string() == "show_help" {
                     Cli::command().print_help().ok();
@@ -35,12 +35,12 @@ fn main() {
             result
         }
         Commands::Auth { project } => commands::auth::run(project),
-        Commands::Request {
+        Commands::Send {
             url,
             method,
             header,
             data,
-        } => commands::request::run(url, method.as_deref(), header, data.as_deref()),
+        } => commands::send::run(url, method.as_deref(), header, data.as_deref()),
     };
 
     if let Err(e) = result {

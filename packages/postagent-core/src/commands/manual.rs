@@ -71,7 +71,7 @@ pub fn run(
         .join("&");
 
     let client = Client::new();
-    let url = format!("{}/api/help?{}", config::api_base(), query_string);
+    let url = format!("{}/api/manual?{}", config::api_base(), query_string);
 
     let response = match client.get(&url).send() {
         Ok(resp) => resp,

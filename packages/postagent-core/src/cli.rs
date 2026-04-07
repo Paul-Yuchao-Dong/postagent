@@ -24,7 +24,7 @@ pub enum Commands {
         query: String,
     },
     /// Get project/resource/action details (progressive discovery)
-    Help {
+    Manual {
         /// Project name
         project: Option<String>,
         /// Resource name
@@ -38,7 +38,7 @@ pub enum Commands {
         project: String,
     },
     /// Send an HTTP request
-    Request {
+    Send {
         /// Request URL
         url: String,
         /// HTTP method
@@ -73,39 +73,39 @@ mod tests {
     }
 
     #[test]
-    fn parse_help_no_args() {
-        let cli = Cli::parse_from(["postagent-core", "help"]);
+    fn parse_manual_no_args() {
+        let cli = Cli::parse_from(["postagent-core", "manual"]);
         assert!(matches!(
             cli.command,
-            Commands::Help { project: None, resource: None, action: None }
+            Commands::Manual { project: None, resource: None, action: None }
         ));
     }
 
     #[test]
-    fn parse_help_project_only() {
-        let cli = Cli::parse_from(["postagent-core", "help", "github"]);
+    fn parse_manual_project_only() {
+        let cli = Cli::parse_from(["postagent-core", "manual", "github"]);
         assert!(matches!(
             cli.command,
-            Commands::Help { project: Some(ref p), resource: None, action: None } if p == "github"
+            Commands::Manual { project: Some(ref p), resource: None, action: None } if p == "github"
         ));
     }
 
     #[test]
-    fn parse_help_project_and_resource() {
-        let cli = Cli::parse_from(["postagent-core", "help", "github", "repos"]);
+    fn parse_manual_project_and_resource() {
+        let cli = Cli::parse_from(["postagent-core", "manual", "github", "repos"]);
         assert!(matches!(
             cli.command,
-            Commands::Help { project: Some(ref p), resource: Some(ref r), action: None }
+            Commands::Manual { project: Some(ref p), resource: Some(ref r), action: None }
                 if p == "github" && r == "repos"
         ));
     }
 
     #[test]
-    fn parse_help_all_three_levels() {
-        let cli = Cli::parse_from(["postagent-core", "help", "github", "repos", "list"]);
+    fn parse_manual_all_three_levels() {
+        let cli = Cli::parse_from(["postagent-core", "manual", "github", "repos", "list"]);
         assert!(matches!(
             cli.command,
-            Commands::Help { project: Some(ref p), resource: Some(ref r), action: Some(ref a) }
+            Commands::Manual { project: Some(ref p), resource: Some(ref r), action: Some(ref a) }
                 if p == "github" && r == "repos" && a == "list"
         ));
     }
@@ -117,26 +117,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_request_minimal() {
-        let cli = Cli::parse_from(["postagent-core", "request", "https://example.com"]);
+    fn parse_send_minimal() {
+        let cli = Cli::parse_from(["postagent-core", "send", "https://example.com"]);
         assert!(matches!(
             cli.command,
-            Commands::Request { ref url, method: None, ref header, data: None }
+            Commands::Send { ref url, method: None, ref header, data: None }
                 if url == "https://example.com" && header.is_empty()
         ));
     }
 
     #[test]
-    fn parse_request_with_method_and_headers() {
+    fn parse_send_with_method_and_headers() {
         let cli = Cli::parse_from([
-            "postagent-core", "request", "https://api.example.com",
+            "postagent-core", "send", "https://api.example.com",
             "-X", "POST",
             "-H", "Content-Type: application/json",
             "-H", "Authorization: Bearer token",
             "-d", r#"{"key":"value"}"#,
         ]);
         match cli.command {
-            Commands::Request { url, method, header, data } => {
+            Commands::Send { url, method, header, data } => {
                 assert_eq!(url, "https://api.example.com");
                 assert_eq!(method, Some("POST".to_string()));
                 assert_eq!(header.len(), 2);
@@ -144,7 +144,7 @@ mod tests {
                 assert_eq!(header[1], "Authorization: Bearer token");
                 assert_eq!(data, Some(r#"{"key":"value"}"#.to_string()));
             }
-            _ => panic!("expected Request command"),
+            _ => panic!("expected Send command"),
         }
     }
 
