@@ -1,7 +1,7 @@
 use reqwest::blocking::Client;
 use serde::Deserialize;
 
-const API_BASE: &str = "http://localhost:3000";
+use crate::config;
 
 #[derive(Deserialize)]
 struct Project {
@@ -12,7 +12,7 @@ struct Project {
 
 pub fn run(query: &str, format: &str) -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::new();
-    let url = format!("{}/api/search?q={}", API_BASE, urlencoding(query));
+    let url = format!("{}/api/search?q={}", config::api_base(), urlencoding(query));
 
     let response = match client.get(&url).send() {
         Ok(resp) => resp,

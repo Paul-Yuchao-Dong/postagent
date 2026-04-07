@@ -1,7 +1,7 @@
 use reqwest::blocking::Client;
 use serde::Deserialize;
 
-const API_BASE: &str = "http://localhost:3000";
+use crate::config;
 
 #[derive(Deserialize)]
 struct ResourceSummary {
@@ -71,7 +71,7 @@ pub fn run(
         .join("&");
 
     let client = Client::new();
-    let url = format!("{}/api/help?{}", API_BASE, query_string);
+    let url = format!("{}/api/help?{}", config::api_base(), query_string);
 
     let response = match client.get(&url).send() {
         Ok(resp) => resp,
