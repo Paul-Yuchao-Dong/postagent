@@ -4,7 +4,7 @@ use serde::Deserialize;
 use crate::config;
 
 #[derive(Deserialize)]
-struct ResourceSummary {
+struct GroupSummary {
     name: String,
     actions: Vec<String>,
 }
@@ -43,7 +43,7 @@ struct ResponseInfo {
 
 pub fn run(
     project: Option<&str>,
-    resource: Option<&str>,
+    group: Option<&str>,
     action: Option<&str>,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -57,8 +57,8 @@ pub fn run(
     };
 
     let mut params = vec![("project", project.to_string())];
-    if let Some(r) = resource {
-        params.push(("resource", r.to_string()));
+    if let Some(r) = group {
+        params.push(("group", r.to_string()));
     }
     if let Some(a) = action {
         params.push(("action", a.to_string()));
@@ -106,29 +106,29 @@ pub fn run(
 
     let data: serde_json::Value = serde_json::from_str(&body_text)?;
 
-    if resource.is_none() {
-        // Level 1: project → list resources
+    if group.is_none() {
+        // Level 1: project → list groups
         let name = data.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let description = data.get("description").and_then(|v| v.as_str()).unwrap_or("");
-        let resources: Vec<ResourceSummary> = serde_json::from_value(
-            data.get("resources").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+        let groups: Vec<GroupSummary> = serde_json::from_value(
+            data.get("groups").cloned().unwrap_or(serde_json::Value::Array(vec![])),
         )?;
 
         println!("{}", name);
         println!("  {}", description);
         println!();
-        println!("Resources:");
-        for r in &resources {
-            println!("  {}  ({})", r.name, r.actions.join(", "));
+        println!("Groups:");
+        for g in &groups {
+            println!("  {}  ({})", g.name, g.actions.join(", "));
         }
     } else if action.is_none() {
-        // Level 2: resource → list actions
-        let resource_name = data.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+        // Level 2: group → list actions
+        let group_name = data.get("group").and_then(|v| v.as_str()).unwrap_or("");
         let actions: Vec<ActionSummary> = serde_json::from_value(
             data.get("actions").cloned().unwrap_or(serde_json::Value::Array(vec![])),
         )?;
 
-        println!("{} > {}", project, resource_name);
+        println!("{} > {}", project, group_name);
         println!();
         println!("Actions:");
         for a in &actions {
@@ -137,13 +137,13 @@ pub fn run(
     } else {
         // Level 3: action detail
         let proj = data.get("project").and_then(|v| v.as_str()).unwrap_or("");
-        let res = data.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+        let grp = data.get("group").and_then(|v| v.as_str()).unwrap_or("");
         let act = data.get("action").and_then(|v| v.as_str()).unwrap_or("");
         let method = data.get("method").and_then(|v| v.as_str()).unwrap_or("");
         let path = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let description = data.get("description").and_then(|v| v.as_str()).unwrap_or("");
 
-        println!("{} > {} > {}", proj, res, act);
+        println!("{} > {} > {}", proj, grp, act);
         println!();
         println!("  {} {}", method, path);
         println!();

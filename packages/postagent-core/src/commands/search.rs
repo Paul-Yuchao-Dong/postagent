@@ -4,10 +4,26 @@ use serde::Deserialize;
 use crate::config;
 
 #[derive(Deserialize)]
+struct ActionHit {
+    name: String,
+    method: String,
+    path: String,
+    summary: String,
+}
+
+#[derive(Deserialize)]
+struct Group {
+    name: String,
+    #[serde(default)]
+    actions: Vec<ActionHit>,
+}
+
+#[derive(Deserialize)]
 struct Project {
     name: String,
     description: String,
-    resources: Vec<String>,
+    #[serde(default)]
+    groups: Vec<Group>,
 }
 
 pub fn run(query: &str, format: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -49,12 +65,28 @@ pub fn run(query: &str, format: &str) -> Result<(), Box<dyn std::error::Error>> 
     let output: Vec<String> = data
         .iter()
         .map(|p| {
-            format!(
-                "{}\n  {}\n  Resources: {}",
-                p.name,
-                p.description,
-                p.resources.join(", ")
-            )
+            let mut lines = vec![
+                p.name.clone(),
+                format!("  {}", p.description),
+            ];
+            if !p.groups.is_empty() {
+                let has_actions = p.groups.iter().any(|g| !g.actions.is_empty());
+                if has_actions {
+                    for g in &p.groups {
+                        if g.actions.is_empty() {
+                            continue;
+                        }
+                        lines.push(format!("  {}", g.name));
+                        for a in &g.actions {
+                            lines.push(format!("    {} {} {}  {}", a.name, a.method, a.path, a.summary));
+                        }
+                    }
+                } else {
+                    let group_names: Vec<&str> = p.groups.iter().map(|g| g.name.as_str()).collect();
+                    lines.push(format!("  Groups: {}", group_names.join(", ")));
+                }
+            }
+            lines.join("\n")
         })
         .collect();
     println!("{}", output.join("\n\n"));
