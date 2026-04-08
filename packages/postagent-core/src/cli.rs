@@ -108,12 +108,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_manual_project_and_resource() {
+    fn parse_manual_project_and_group() {
         let cli = Cli::parse_from(["postagent", "manual", "github", "repos"]);
         assert!(matches!(
             cli.command,
-            Commands::Manual { project: Some(ref p), group: Some(ref r), action: None, .. }
-                if p == "github" && r == "repos"
+            Commands::Manual { project: Some(ref p), group: Some(ref g), action: None, .. }
+                if p == "github" && g == "repos"
         ));
     }
 
@@ -122,8 +122,8 @@ mod tests {
         let cli = Cli::parse_from(["postagent", "manual", "github", "repos", "list"]);
         assert!(matches!(
             cli.command,
-            Commands::Manual { project: Some(ref p), group: Some(ref r), action: Some(ref a), .. }
-                if p == "github" && r == "repos" && a == "list"
+            Commands::Manual { project: Some(ref p), group: Some(ref g), action: Some(ref a), .. }
+                if p == "github" && g == "repos" && a == "list"
         ));
     }
 
