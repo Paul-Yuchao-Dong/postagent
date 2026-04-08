@@ -163,35 +163,34 @@ fn format_search_results(projects: &[SearchProject], query: &str) -> String {
         .len();
     let result_count = rows.len();
 
-    // Build table rows with header
-    let mut table_rows: Vec<Vec<String>> = vec![vec![
-        "PROJECT".into(),
-        "GROUP".into(),
-        "ACTION".into(),
-        "METHOD".into(),
-        "PATH".into(),
-        "SUMMARY".into(),
-    ]];
-
+    // Group by project/group, preserving score order
+    let mut groups: Vec<(String, Vec<&FlatRow>)> = Vec::new();
     for r in &rows {
-        table_rows.push(vec![
-            r.project.clone(),
-            r.group.clone(),
-            r.action.clone(),
-            r.method.clone(),
-            r.path.clone(),
-            formatter::truncate(&r.summary, 50),
-        ]);
+        let key = format!("{}/{}", r.project, r.group);
+        if let Some((_k, items)) = groups.iter_mut().find(|(k, _)| k == &key) {
+            items.push(r);
+        } else {
+            groups.push((key, vec![r]));
+        }
     }
-
-    let aligned = formatter::align_columns(&table_rows, 2);
 
     let mut output = String::new();
-    for line in &aligned {
-        output.push_str(&format!("  {}\n", line));
+
+    for (key, items) in &groups {
+        output.push_str(&format!("  {}:\n", key));
+
+        let mut table_rows: Vec<Vec<String>> = Vec::new();
+        for r in items {
+            table_rows.push(vec![r.action.clone(), r.summary.clone()]);
+        }
+
+        let aligned = formatter::align_columns(&table_rows, 2);
+        for line in &aligned {
+            output.push_str(&format!("    {}\n", line));
+        }
+        output.push('\n');
     }
 
-    output.push('\n');
     output.push_str(&format!(
         "  {} results from {} projects\n",
         result_count, project_count
@@ -199,7 +198,7 @@ fn format_search_results(projects: &[SearchProject], query: &str) -> String {
 
     // Hint with example using best match (first row)
     output.push('\n');
-    output.push_str("  Run postagent manual <project> <group> <action> for full details.\n");
+    output.push_str("  Run postagent manual <PROJECT> <GROUP> <ACTION> for full details.\n");
     output.push_str(&format!(
         "  Example: postagent manual {} {} {}",
         rows[0].project, rows[0].group, rows[0].action
@@ -301,11 +300,11 @@ mod tests {
         }];
 
         let output = format_search_results(&projects, "create page notion");
-        assert!(output.contains("PROJECT"));
-        assert!(output.contains("notion"));
+        assert!(output.contains("notion/pages:"));
+        assert!(output.contains("notion/databases:"));
         assert!(output.contains("create_page"));
         assert!(output.contains("create_database"));
-        assert!(output.contains("Run postagent manual <project> <group> <action> for full details."));
+        assert!(output.contains("Run postagent manual <PROJECT> <GROUP> <ACTION> for full details."));
     }
 
     #[test]
@@ -340,8 +339,8 @@ mod tests {
         ];
 
         let output = format_search_results(&projects, "create page");
-        assert!(output.contains("notion"));
-        assert!(output.contains("coda"));
+        assert!(output.contains("notion/pages:"));
+        assert!(output.contains("coda/pages:"));
         assert!(output.contains("results from 2 projects"));
     }
 
@@ -374,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn format_search_truncates_long_summary() {
+    fn format_search_preserves_full_summary() {
         let long_summary = format!("Create a page {}", "with details ".repeat(5));
         let projects = vec![SearchProject {
             name: "test".into(),
@@ -385,13 +384,13 @@ mod tests {
                     name: "create_action".into(),
                     method: "GET".into(),
                     path: "/test".into(),
-                    summary: long_summary,
+                    summary: long_summary.clone(),
                 }],
             }],
         }];
 
         let output = format_search_results(&projects, "create");
-        assert!(output.contains('…'));
+        assert!(output.contains(long_summary.trim()));
     }
 
     #[test]
