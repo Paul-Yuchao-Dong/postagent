@@ -2,7 +2,8 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "postagent-core",
+    name = "postagent",
+    bin_name = "postagent",
     version,
     about = "CLI collection tool for agents",
     disable_help_subcommand = true
@@ -10,10 +11,6 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
-
-    /// Output raw JSON instead of formatted text
-    #[arg(long, global = true)]
-    pub json: bool,
 }
 
 #[derive(Subcommand)]
@@ -22,6 +19,9 @@ pub enum Commands {
     Search {
         /// Search query
         query: String,
+        /// Output format: markdown / json
+        #[arg(long, default_value = "markdown")]
+        format: String,
     },
     /// Get project/group/action details (progressive discovery)
     Manual {
@@ -31,13 +31,32 @@ pub enum Commands {
         group: Option<String>,
         /// Action name
         action: Option<String>,
+        /// Output format: markdown / json
+        #[arg(long, default_value = "markdown")]
+        format: String,
     },
     /// Save API key for a project
+    #[command(after_help = "\
+Examples:
+  postagent auth github
+  postagent auth openai
+
+Saved keys can be referenced in `send` as $POSTAGENT.<PROJECT>.API_KEY
+For example, after `postagent auth github`, use $POSTAGENT.GITHUB.API_KEY in headers.")]
     Auth {
         /// Project name
         project: String,
     },
     /// Send an HTTP request
+    #[command(after_help = "\
+Token substitution:
+  Use $POSTAGENT.<PROJECT>.API_KEY in URL, headers, or body to inject saved keys.
+  Save a key first with `postagent auth <project>`.
+
+Examples:
+  postagent send https://api.example.com/users
+  postagent send https://api.example.com/users -X POST -d '{\"name\":\"alice\"}'
+  postagent send https://api.example.com/me -H 'Authorization: Bearer $POSTAGENT.GITHUB.API_KEY'")]
     Send {
         /// Request URL
         url: String,
@@ -60,65 +79,63 @@ mod tests {
 
     #[test]
     fn parse_search_command() {
-        let cli = Cli::parse_from(["postagent-core", "search", "github"]);
-        assert!(matches!(cli.command, Commands::Search { query } if query == "github"));
-        assert!(!cli.json);
+        let cli = Cli::parse_from(["postagent", "search", "github"]);
+        assert!(matches!(cli.command, Commands::Search { ref query, ref format } if query == "github" && format == "markdown"));
     }
 
     #[test]
-    fn parse_search_with_json_flag() {
-        let cli = Cli::parse_from(["postagent-core", "--json", "search", "test"]);
-        assert!(matches!(cli.command, Commands::Search { query } if query == "test"));
-        assert!(cli.json);
+    fn parse_search_with_json_format() {
+        let cli = Cli::parse_from(["postagent", "search", "test", "--format", "json"]);
+        assert!(matches!(cli.command, Commands::Search { ref query, ref format } if query == "test" && format == "json"));
     }
 
     #[test]
     fn parse_manual_no_args() {
-        let cli = Cli::parse_from(["postagent-core", "manual"]);
+        let cli = Cli::parse_from(["postagent", "manual"]);
         assert!(matches!(
             cli.command,
-            Commands::Manual { project: None, group: None, action: None }
+            Commands::Manual { project: None, group: None, action: None, .. }
         ));
     }
 
     #[test]
     fn parse_manual_project_only() {
-        let cli = Cli::parse_from(["postagent-core", "manual", "github"]);
+        let cli = Cli::parse_from(["postagent", "manual", "github"]);
         assert!(matches!(
             cli.command,
-            Commands::Manual { project: Some(ref p), group: None, action: None } if p == "github"
+            Commands::Manual { project: Some(ref p), group: None, action: None, .. } if p == "github"
         ));
     }
 
     #[test]
     fn parse_manual_project_and_group() {
-        let cli = Cli::parse_from(["postagent-core", "manual", "github", "repos"]);
+        let cli = Cli::parse_from(["postagent", "manual", "github", "repos"]);
         assert!(matches!(
             cli.command,
-            Commands::Manual { project: Some(ref p), group: Some(ref g), action: None }
+            Commands::Manual { project: Some(ref p), group: Some(ref g), action: None, .. }
                 if p == "github" && g == "repos"
         ));
     }
 
     #[test]
     fn parse_manual_all_three_levels() {
-        let cli = Cli::parse_from(["postagent-core", "manual", "github", "repos", "list"]);
+        let cli = Cli::parse_from(["postagent", "manual", "github", "repos", "list"]);
         assert!(matches!(
             cli.command,
-            Commands::Manual { project: Some(ref p), group: Some(ref g), action: Some(ref a) }
+            Commands::Manual { project: Some(ref p), group: Some(ref g), action: Some(ref a), .. }
                 if p == "github" && g == "repos" && a == "list"
         ));
     }
 
     #[test]
     fn parse_auth_command() {
-        let cli = Cli::parse_from(["postagent-core", "auth", "openai"]);
+        let cli = Cli::parse_from(["postagent", "auth", "openai"]);
         assert!(matches!(cli.command, Commands::Auth { project } if project == "openai"));
     }
 
     #[test]
     fn parse_send_minimal() {
-        let cli = Cli::parse_from(["postagent-core", "send", "https://example.com"]);
+        let cli = Cli::parse_from(["postagent", "send", "https://example.com"]);
         assert!(matches!(
             cli.command,
             Commands::Send { ref url, method: None, ref header, data: None }
@@ -129,7 +146,7 @@ mod tests {
     #[test]
     fn parse_send_with_method_and_headers() {
         let cli = Cli::parse_from([
-            "postagent-core", "send", "https://api.example.com",
+            "postagent", "send", "https://api.example.com",
             "-X", "POST",
             "-H", "Content-Type: application/json",
             "-H", "Authorization: Bearer token",
@@ -149,14 +166,20 @@ mod tests {
     }
 
     #[test]
-    fn json_flag_is_global() {
-        let cli = Cli::parse_from(["postagent-core", "search", "test", "--json"]);
-        assert!(cli.json);
+    fn format_flag_on_search() {
+        let cli = Cli::parse_from(["postagent", "search", "test", "--format", "json"]);
+        assert!(matches!(cli.command, Commands::Search { ref format, .. } if format == "json"));
     }
 
     #[test]
-    fn default_is_not_json() {
-        let cli = Cli::parse_from(["postagent-core", "search", "test"]);
-        assert!(!cli.json);
+    fn default_format_is_markdown() {
+        let cli = Cli::parse_from(["postagent", "search", "test"]);
+        assert!(matches!(cli.command, Commands::Search { ref format, .. } if format == "markdown"));
+    }
+
+    #[test]
+    fn format_flag_on_manual() {
+        let cli = Cli::parse_from(["postagent", "manual", "github", "--format", "json"]);
+        assert!(matches!(cli.command, Commands::Manual { ref format, .. } if format == "json"));
     }
 }

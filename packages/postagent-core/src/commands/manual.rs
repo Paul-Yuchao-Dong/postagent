@@ -102,7 +102,7 @@ pub fn run(
     project: Option<&str>,
     group: Option<&str>,
     action: Option<&str>,
-    json: bool,
+    format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let project = match project {
         Some(p) => p,
@@ -151,7 +151,7 @@ pub fn run(
 
     let body_text = response.text()?;
 
-    if json {
+    if format == "json" {
         let value: serde_json::Value = serde_json::from_str(&body_text)?;
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn run_without_project_returns_show_help() {
-        let result = run(None, None, None, false);
+        let result = run(None, None, None, "markdown");
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "show_help");
     }

@@ -12,17 +12,18 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
-        Commands::Search { query } => commands::search::run(query, cli.json),
+        Commands::Search { query, format } => commands::search::run(query, format),
         Commands::Manual {
             project,
             group,
             action,
+            format,
         } => {
             let result = commands::manual::run(
                 project.as_deref(),
                 group.as_deref(),
                 action.as_deref(),
-                cli.json,
+                format,
             );
             // Handle the special "show_help" case (manual with no args)
             if let Err(ref e) = result {
