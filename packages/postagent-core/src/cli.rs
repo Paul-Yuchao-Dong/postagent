@@ -6,7 +6,19 @@ use clap::{Parser, Subcommand};
     bin_name = "postagent",
     version,
     about = "CLI collection tool for agents",
-    disable_help_subcommand = true
+    disable_help_subcommand = true,
+    help_template = "\
+{about-with-newline}
+{usage-heading} {usage}
+
+Commands:
+  search <KEYWORD>                      Search actions by keyword
+  manual [PROJECT] [GROUP] [ACTION]     Browse API reference (progressive discovery)
+  auth <PROJECT>                        Save API key for a project
+  send <URL> [-X METHOD] [-H HEADER]    Send an HTTP request
+
+Options:
+{options}"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -15,10 +27,15 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Search projects by keyword
+    /// Search actions by keyword
+    #[command(after_help = "\
+Examples:
+  postagent search \"send a message\"
+  postagent search \"create github issue\"
+  postagent search \"upload file to s3\"")]
     Search {
-        /// Search query
-        query: String,
+        /// What you want to do, e.g. "send a message"
+        keyword: String,
         /// Output format: markdown / json
         #[arg(long, default_value = "markdown")]
         format: String,
@@ -57,7 +74,7 @@ For example, after `postagent auth github`, use $POSTAGENT.GITHUB.API_KEY in hea
     #[command(after_help = "\
 Token substitution:
   Use $POSTAGENT.<PROJECT>.API_KEY in URL, headers, or body to inject saved keys.
-  Save a key first with `postagent auth <project>`.
+  Save a key first with `postagent auth <PROJECT>`.
 
 Examples:
   postagent send https://api.example.com/users
@@ -86,13 +103,13 @@ mod tests {
     #[test]
     fn parse_search_command() {
         let cli = Cli::parse_from(["postagent", "search", "github"]);
-        assert!(matches!(cli.command, Commands::Search { ref query, ref format } if query == "github" && format == "markdown"));
+        assert!(matches!(cli.command, Commands::Search { ref keyword, ref format } if keyword == "github" && format == "markdown"));
     }
 
     #[test]
     fn parse_search_with_json_format() {
         let cli = Cli::parse_from(["postagent", "search", "test", "--format", "json"]);
-        assert!(matches!(cli.command, Commands::Search { ref query, ref format } if query == "test" && format == "json"));
+        assert!(matches!(cli.command, Commands::Search { ref keyword, ref format } if keyword == "test" && format == "json"));
     }
 
     #[test]

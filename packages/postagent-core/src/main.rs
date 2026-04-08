@@ -12,7 +12,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
-        Commands::Search { query, format } => commands::search::run(query, format),
+        Commands::Search { keyword, format } => commands::search::run(keyword, format),
         Commands::Manual {
             project,
             group,
