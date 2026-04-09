@@ -18,9 +18,6 @@ target/
 packages/postagent-*/bin/*
 !packages/postagent-*/bin/.gitkeep
 
-# pnpm
-pnpm-lock.yaml
-
 .claude/
 .agents/
 .agent/

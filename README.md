@@ -1,6 +1,6 @@
-# postagent
+# Postagent
 
-CLI tool for AI agents. Discover and browse API documentation for various services without WebSearch.
+Postman CLI, but for AI Agents. Discover, browse, and send requests to thousands of APIs.
 
 ## Install
 
@@ -8,56 +8,61 @@ CLI tool for AI agents. Discover and browse API documentation for various servic
 npm install -g postagent
 ```
 
-## Usage
-
-### Search
+## Quickstart
 
 ```bash
-postagent search "code hosting"
+postagent search "Create a document on Notion"
+postagent manual notion pages create_page
+postagent auth notion
+postagent send -X POST https://api.notion.com/v1/pages \
+  -H "Authorization: Bearer $POSTAGENT.NOTION.TOKEN" \
+  -H "Notion-Version: 2022-06-28" \
+  -H "Content-Type: application/json" \
+  -d '{"parent":{"page_id":"YOUR_PAGE_ID"},"properties":{"title":[{"text":{"content":"My Page"}}]}}'
 ```
 
-### Manual (Progressive Discovery)
+The `send` command uses the same options as `curl`, so agents already know how to use it. Postagent replaces the `TOKEN` placeholder with the actual token from local storage, keeping your credentials out of the LLM context entirely.
 
-```bash
-postagent manual                       # List all sites
-postagent manual github                # List groups of a site
-postagent manual github repo           # List actions of a group
-postagent manual github repo list      # Get API doc for a specific action
-postagent manual github repo list --format json  # Output as JSON
+## Usage with Agents
+
+The simplest approach is just tell your agent to use it:
+
 ```
-
-### Send
-
-```bash
-postagent send https://api.example.com
-postagent send https://api.example.com -X POST -d '{"key":"value"}'
-postagent send https://api.example.com -H "Authorization: Bearer $POSTAGENT.<SITE>.API_KEY"
-```
-
-### Auth
-
-```bash
-postagent auth github                  # Save API key for a site
+Use postagent to make a marketing plan on Notion, then create and assign a task to me on Linear. Run postagent --help to see available commands.
 ```
 
 ## Configuration
 
-Environment variables:
+You can try and test Postagent without setting an API key. However, the no API key mode is rate limited to 10 requests per minute.
+
+If you need more requests, you can get a free API key from [Actionbook](https://actionbook.dev) and set it using the following command:
 
 ```bash
-export POSTAGENT_API_URL=https://api.postagent.dev
-export POSTAGENT_API_KEY=pa_xxxxxxxxxxxx
+postagent config set apiKey ak_xxxxxxxxxxxx
+```
+
+Or via environment variables:
+
+```bash
+export POSTAGENT_API_KEY=ak_xxxxxxxxxxxx
+```
+
+## Commands
+
+```bash
+postagent search <query>                    # Search for related actions by natural language
+postagent auth <site>                       # Complete an auth flow for a site
+postagent manual <site> [group] [action]    # Get detailed manual for an action
+postagent send [options]                    # Send a request to a site, the options is same as curl
 ```
 
 ## Development
 
 ```bash
 pnpm install
-pnpm dev                               # Run with POSTAGENT_DEV mode
-pnpm dev:watch                         # Watch Rust code and auto-rebuild
-pnpm build                             # Build for production
+pnpm dev:watch
 ```
 
 ## License
 
-MIT
+Apache-2.0
