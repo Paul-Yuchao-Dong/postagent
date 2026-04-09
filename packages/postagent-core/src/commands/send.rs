@@ -77,6 +77,11 @@ pub fn run(
         );
     }
 
+    // 3.5. Inject x-api-key from config if set
+    if let Some(api_key) = super::config::get_value("apiKey") {
+        merged_headers.insert("x-api-key".to_string(), api_key);
+    }
+
     // 4. Send request
     let client = Client::builder()
         .timeout(Duration::from_secs(30))

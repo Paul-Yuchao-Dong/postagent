@@ -23,6 +23,11 @@ fn load_config(path: &Path) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+pub fn get_value(key: &str) -> Option<String> {
+    let path = config_file();
+    load_config(&path).get(key).cloned()
+}
+
 fn save_config(path: &Path, config: &BTreeMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
