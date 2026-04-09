@@ -32,7 +32,7 @@ Postagent replaces the `TOKEN` placeholder with the actual token from local stor
 
 ## Usage with Agents
 
-The simplest approach is just tell your agent to use it:
+The easiest way is to just tell your agent to use it:
 
 ```
 Use postagent to make a marketing plan on Notion, then create and assign a task to me on Linear. Run postagent --help to see available commands.
