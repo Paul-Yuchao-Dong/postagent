@@ -20,7 +20,7 @@ postagent manual notion pages create_page
 # Auth and send request
 postagent auth notion
 postagent send -X POST https://api.notion.com/v1/pages \
-  -H "Authorization: Bearer $POSTAGENT.NOTION.TOKEN" \
+  -H "Authorization: Bearer $POSTAGENT.NOTION.API_KEY" \
   -H "Notion-Version: 2022-06-28" \
   -H "Content-Type: application/json" \
   -d '{"parent":{"page_id":"YOUR_PAGE_ID"},"properties":{"title":[{"text":{"content":"My Page"}}]}}'
@@ -28,7 +28,7 @@ postagent send -X POST https://api.notion.com/v1/pages \
 
 The `send` command uses the same options as `curl`, so agents already know how to use it.
 
-Postagent replaces the `TOKEN` placeholder with the actual token from local storage, keeping your credentials out of the LLM context entirely.
+Postagent replaces the `API_KEY` placeholder with the actual key/token from local storage, keeping your credentials out of the LLM context entirely.
 
 ## Usage with Agents
 
