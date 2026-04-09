@@ -5,7 +5,7 @@ use crate::api_response;
 use crate::config;
 use crate::formatter;
 
-// === L1 data structures ===
+// === Site overview data structures ===
 
 #[derive(Deserialize, Clone)]
 struct Authentication {
@@ -19,7 +19,7 @@ struct Authentication {
 }
 
 #[derive(Deserialize)]
-struct L1Group {
+struct SiteGroup {
     name: String,
     #[allow(dead_code)]
     base_url: Option<String>,
@@ -27,17 +27,17 @@ struct L1Group {
 }
 
 #[derive(Deserialize)]
-struct L1Response {
+struct SiteOverview {
     name: String,
     description: String,
     authentication: Option<Authentication>,
-    groups: Vec<L1Group>,
+    groups: Vec<SiteGroup>,
 }
 
-// === L2 data structures ===
+// === Group overview data structures ===
 
 #[derive(Deserialize)]
-struct L2Action {
+struct GroupAction {
     name: String,
     method: String,
     path: String,
@@ -47,14 +47,14 @@ struct L2Action {
 }
 
 #[derive(Deserialize)]
-struct L2Response {
+struct GroupOverview {
     group: String,
     #[allow(dead_code)]
     base_url: Option<String>,
-    actions: Vec<L2Action>,
+    actions: Vec<GroupAction>,
 }
 
-// === L3 data structures ===
+// === Action detail data structures ===
 
 #[derive(Deserialize)]
 struct Parameter {
@@ -84,7 +84,7 @@ struct ResponseInfo {
 }
 
 #[derive(Deserialize)]
-struct L3Response {
+struct ActionDetail {
     site: String,
     group: String,
     action: String,
@@ -153,14 +153,14 @@ pub fn run(
     }
 
     if group.is_none() {
-        let l1: L1Response = serde_json::from_value(data)?;
-        println!("{}", format_l1(&l1));
+        let l1: SiteOverview = serde_json::from_value(data)?;
+        println!("{}", format_site_overview(&l1));
     } else if action.is_none() {
-        let l2: L2Response = serde_json::from_value(data)?;
-        println!("{}", format_l2(&l2, site));
+        let l2: GroupOverview = serde_json::from_value(data)?;
+        println!("{}", format_group_overview(&l2, site));
     } else {
-        let l3: L3Response = serde_json::from_value(data)?;
-        println!("{}", format_l3(&l3));
+        let l3: ActionDetail = serde_json::from_value(data)?;
+        println!("{}", format_action_detail(&l3));
     }
 
     Ok(())
@@ -177,7 +177,7 @@ struct SiteMeta {
     api_type: Option<String>,
 }
 
-fn extract_meta_from_l1(data: &L1Response) -> SiteMeta {
+fn extract_site_meta(data: &SiteOverview) -> SiteMeta {
     let description = &data.description;
     let is_graphql = description.to_lowercase().contains("graphql");
 
@@ -248,8 +248,8 @@ fn format_auth_from_struct(auth: &Authentication, site: &str) -> String {
     }
 }
 
-fn format_l1(data: &L1Response) -> String {
-    let meta = extract_meta_from_l1(data);
+fn format_site_overview(data: &SiteOverview) -> String {
+    let meta = extract_site_meta(data);
 
     let mut output = String::new();
     output.push_str(&format!("  === {}\n\n", data.name));
@@ -336,7 +336,7 @@ fn format_l1(data: &L1Response) -> String {
 
 // === L2: Group Actions ===
 
-fn format_l2(data: &L2Response, site: &str) -> String {
+fn format_group_overview(data: &GroupOverview, site: &str) -> String {
     let total = data.actions.len();
 
     let mut output = String::new();
@@ -443,7 +443,7 @@ fn extract_type(schema: &serde_json::Value) -> String {
     "any".to_string()
 }
 
-fn format_l3(data: &L3Response) -> String {
+fn format_action_detail(data: &ActionDetail) -> String {
     let is_graphql = data.method == "QUERY" || data.method == "MUTATION";
 
     let mut output = String::new();
@@ -609,8 +609,8 @@ mod tests {
     }
 
     #[test]
-    fn format_l1_notion() {
-        let data: L1Response = serde_json::from_value(json!({
+    fn format_site_overview_notion() {
+        let data: SiteOverview = serde_json::from_value(json!({
             "name": "notion",
             "description": "All requests are sent to `https://api.notion.com`. Authentication uses tokens via `Authorization: Bearer <token>` header. Every request must include the `Notion-Version` header (latest: `2026-03-11`). Docs at `developers.notion.com`.",
             "authentication": {
@@ -626,7 +626,7 @@ mod tests {
         }))
         .unwrap();
 
-        let output = format_l1(&data);
+        let output = format_site_overview(&data);
         assert!(output.contains("=== notion"));
         assert!(output.contains("Base URL:"));
         assert!(output.contains("https://api.notion.com"));
@@ -639,45 +639,45 @@ mod tests {
     }
 
     #[test]
-    fn format_l1_truncation() {
+    fn format_site_overview_truncation() {
         let actions: Vec<String> = (0..15).map(|i| format!("action_{}", i)).collect();
-        let data = L1Response {
+        let data = SiteOverview {
             name: "test".into(),
             description: "".into(),
             authentication: None,
-            groups: vec![L1Group {
+            groups: vec![SiteGroup {
                 name: "big_group".into(),
                 base_url: None,
                 actions,
             }],
         };
 
-        let output = format_l1(&data);
+        let output = format_site_overview(&data);
         assert!(output.contains("... 10 more actions"));
         assert!(output.contains("action_0"));
         assert!(output.contains("action_4"));
     }
 
     #[test]
-    fn format_l1_uses_group_base_url_fallback() {
-        let data = L1Response {
+    fn format_site_overview_uses_group_base_url_fallback() {
+        let data = SiteOverview {
             name: "notion".into(),
             description: "Docs at `developers.notion.com`.".into(),
             authentication: None,
-            groups: vec![L1Group {
+            groups: vec![SiteGroup {
                 name: "pages".into(),
                 base_url: Some("https://api.notion.com".into()),
                 actions: vec!["create_page".into()],
             }],
         };
 
-        let output = format_l1(&data);
+        let output = format_site_overview(&data);
         assert!(output.contains("Base URL:  https://api.notion.com"));
     }
 
     #[test]
-    fn format_l2_basic() {
-        let data: L2Response = serde_json::from_value(json!({
+    fn format_group_overview_basic() {
+        let data: GroupOverview = serde_json::from_value(json!({
             "group": "pages",
             "base_url": "https://api.notion.com",
             "actions": [
@@ -687,7 +687,7 @@ mod tests {
         }))
         .unwrap();
 
-        let output = format_l2(&data, "notion");
+        let output = format_group_overview(&data, "notion");
         assert!(output.contains("notion/pages — 2 actions"));
         assert!(output.contains("Actions:"));
         assert!(output.contains("create_page"));
@@ -698,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn format_l2_shows_all_actions() {
+    fn format_group_overview_shows_all_actions() {
         let actions: Vec<serde_json::Value> = (0..25)
             .map(|i| {
                 json!({
@@ -710,14 +710,14 @@ mod tests {
                 })
             })
             .collect();
-        let data: L2Response = serde_json::from_value(json!({
+        let data: GroupOverview = serde_json::from_value(json!({
             "group": "pages",
             "base_url": "https://api.example.com",
             "actions": actions
         }))
         .unwrap();
 
-        let output = format_l2(&data, "example");
+        let output = format_group_overview(&data, "example");
         assert!(output.contains("example/pages — 25 actions"));
         assert!(output.contains("action_0"));
         assert!(output.contains("action_24"));
@@ -726,8 +726,8 @@ mod tests {
     }
 
     #[test]
-    fn format_l3_restful() {
-        let data: L3Response = serde_json::from_value(json!({
+    fn format_action_detail_restful() {
+        let data: ActionDetail = serde_json::from_value(json!({
             "site": "notion",
             "group": "pages",
             "action": "create_page",
@@ -760,7 +760,7 @@ mod tests {
         }))
         .unwrap();
 
-        let output = format_l3(&data);
+        let output = format_action_detail(&data);
         assert!(output.contains("=== create_page"));
         assert!(output.contains("site:      notion"));
         assert!(output.contains("method:    POST"));
@@ -778,8 +778,8 @@ mod tests {
     }
 
     #[test]
-    fn format_l3_graphql() {
-        let data: L3Response = serde_json::from_value(json!({
+    fn format_action_detail_graphql() {
+        let data: ActionDetail = serde_json::from_value(json!({
             "site": "shopify",
             "group": "queries",
             "action": "customer",
@@ -801,7 +801,7 @@ mod tests {
         }))
         .unwrap();
 
-        let output = format_l3(&data);
+        let output = format_action_detail(&data);
         assert!(output.contains("=== customer"));
         assert!(output.contains("site:      shopify"));
         assert!(output.contains("type:      QUERY"));
@@ -813,8 +813,8 @@ mod tests {
     }
 
     #[test]
-    fn format_l3_with_parameters() {
-        let data: L3Response = serde_json::from_value(json!({
+    fn format_action_detail_with_parameters() {
+        let data: ActionDetail = serde_json::from_value(json!({
             "site": "notion",
             "group": "pages",
             "action": "retrieve_page",
@@ -838,7 +838,7 @@ mod tests {
         }))
         .unwrap();
 
-        let output = format_l3(&data);
+        let output = format_action_detail(&data);
         assert!(output.contains("## Parameters"));
         assert!(output.contains("FIELD"));
         assert!(output.contains("page_id"));
