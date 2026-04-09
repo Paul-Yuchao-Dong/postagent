@@ -43,9 +43,9 @@ Send the request with curl-style options:
 
 ```bash
 postagent send -X POST https://api.notion.com/v1/pages \
-  -H "Authorization: Bearer $POSTAGENT.NOTION.API_KEY" \
-  -H "Notion-Version: 2022-06-28" \
-  -H "Content-Type: application/json" \
+  -H 'Authorization: Bearer $POSTAGENT.NOTION.API_KEY' \
+  -H 'Notion-Version: 2022-06-28' \
+  -H 'Content-Type: application/json' \
   -d '{"parent":{"page_id":"YOUR_PAGE_ID"},"properties":{"title":[{"text":{"content":"My Page"}}]}}'
 ```
 
@@ -106,9 +106,9 @@ postagent search "create a notion page"
 postagent manual notion pages create_page
 postagent auth notion
 postagent send -X POST https://api.notion.com/v1/pages \
-  -H "Authorization: Bearer $POSTAGENT.NOTION.API_KEY" \
-  -H "Notion-Version: 2022-06-28" \
-  -H "Content-Type: application/json" \
+  -H 'Authorization: Bearer $POSTAGENT.NOTION.API_KEY' \
+  -H 'Notion-Version: 2022-06-28' \
+  -H 'Content-Type: application/json' \
   -d '{"parent":{"page_id":"YOUR_PAGE_ID"},"properties":{"title":[{"text":{"content":"My Page"}}]}}'
 ```
 
