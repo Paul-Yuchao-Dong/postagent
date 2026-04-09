@@ -47,7 +47,7 @@ Examples:
   postagent manual notion                         List groups and actions
   postagent manual notion pages                   List actions in a group
   postagent manual notion pages create_page       Full action details
-  postagent manual notion --json                   JSON output")]
+  postagent manual notion --json                  JSON output")]
     Manual {
         /// Site name
         site: Option<String>,
