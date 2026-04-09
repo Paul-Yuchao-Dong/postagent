@@ -26,7 +26,9 @@ postagent send -X POST https://api.notion.com/v1/pages \
   -d '{"parent":{"page_id":"YOUR_PAGE_ID"},"properties":{"title":[{"text":{"content":"My Page"}}]}}'
 ```
 
-The `send` command uses the same options as `curl`, so agents already know how to use it. Postagent replaces the `TOKEN` placeholder with the actual token from local storage, keeping your credentials out of the LLM context entirely.
+The `send` command uses the same options as `curl`, so agents already know how to use it.
+
+Postagent replaces the `TOKEN` placeholder with the actual token from local storage, keeping your credentials out of the LLM context entirely.
 
 ## Usage with Agents
 
