@@ -1,0 +1,111 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            package: postagent-darwin-arm64
+            binary: postagent-core
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            package: postagent-darwin-x64
+            binary: postagent-core
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            package: postagent-linux-x64-gnu
+            binary: postagent-core
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            package: postagent-linux-arm64-gnu
+            binary: postagent-core
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            package: postagent-win32-x64
+            binary: postagent-core.exe
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        working-directory: packages/postagent-core
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: packages/postagent-core/target/${{ matrix.target }}/release/${{ matrix.binary }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Place binaries into platform packages
+        run: |
+          for pkg in postagent-darwin-arm64 postagent-darwin-x64 postagent-linux-x64-gnu postagent-linux-arm64-gnu postagent-win32-x64; do
+            cp artifacts/$pkg/* packages/$pkg/bin/
+          done
+          chmod +x packages/postagent-darwin-*/bin/postagent-core
+          chmod +x packages/postagent-linux-*/bin/postagent-core
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build postagent
+        run: pnpm --filter postagent build
+
+      - name: Publish platform packages
+        run: |
+          for pkg in postagent-darwin-arm64 postagent-darwin-x64 postagent-linux-x64-gnu postagent-linux-arm64-gnu postagent-win32-x64; do
+            pnpm --filter $pkg publish --no-git-checks --access public
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish postagent
+        run: pnpm --filter postagent publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
