@@ -67,6 +67,12 @@ postagent send [options]                    # Send a request to a site, the opti
 
 Visit [https://api.postagent.dev/supported-sites.md](https://api.postagent.dev/supported-sites.md) to get the full list of supported sites. We are continually expanding it.
 
+## Stay tuned
+
+We move fast. Star Postagent on Github to support and get latest information.
+
+![star-postagent](https://github.com/user-attachments/assets/1b07074e-d59a-420a-a313-4e2238952c6b)
+
 ## Development
 
 ```bash
