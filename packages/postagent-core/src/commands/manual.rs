@@ -546,16 +546,40 @@ fn extract_type(schema: &serde_json::Value) -> String {
         return r.rsplit('/').next().unwrap_or("object").to_string();
     }
     // Infer type from enum values when `type` is missing — skip nulls since
-    // JSON Schema encodes nullability as `[null, "actual"]`.
+    // JSON Schema encodes nullability as `[null, "actual"]`, and fall back to
+    // `any` if enum members span multiple scalar types.
     if let Some(arr) = schema.get("enum").and_then(|v| v.as_array()) {
-        if let Some(first) = arr.iter().find(|v| !v.is_null()) {
-            return infer_scalar_type(first);
+        if let Some(enum_type) = infer_enum_type(arr) {
+            return enum_type;
         }
     }
     if let Some(c) = schema.get("const") {
         return infer_scalar_type(c);
     }
     "any".to_string()
+}
+
+fn infer_enum_type(values: &[serde_json::Value]) -> Option<String> {
+    let mut inferred: Option<String> = None;
+
+    for value in values {
+        if value.is_null() {
+            continue;
+        }
+
+        let value_type = infer_scalar_type(value);
+        if value_type == "any" {
+            return Some("any".into());
+        }
+
+        match &inferred {
+            None => inferred = Some(value_type),
+            Some(existing) if existing == &value_type => {}
+            Some(_) => return Some("any".into()),
+        }
+    }
+
+    inferred
 }
 
 fn infer_scalar_type(v: &serde_json::Value) -> String {
@@ -772,6 +796,11 @@ mod tests {
             "Parent"
         );
         assert_eq!(extract_type(&json!({})), "any");
+        assert_eq!(
+            extract_type(&json!({"enum": ["queued", "running", null]})),
+            "string"
+        );
+        assert_eq!(extract_type(&json!({"enum": [1, "auto"]})), "any");
     }
 
     #[test]
