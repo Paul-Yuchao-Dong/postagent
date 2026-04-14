@@ -428,37 +428,106 @@ fn action_to_title(action: &str) -> String {
         .join(" ")
 }
 
-fn format_schema_table(
-    props_obj: &serde_json::Map<String, serde_json::Value>,
-    schema: &serde_json::Value,
-) -> String {
-    let required_fields: std::collections::HashSet<String> = schema
-        .get("required")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
+// Full recursion budget for request bodies — LLMs need the complete shape to
+// compose the JSON. Bounded to guard against pathological schemas.
+const REQUEST_SCHEMA_DEPTH: usize = 5;
+// Responses are consumed, not composed — top-level fields sketch the shape
+// cheaply; deep structure belongs in --format json for anyone who needs it.
+const RESPONSE_SCHEMA_DEPTH: usize = 0;
+// Hard cap on total recursion frames (independent of `depth_budget`, which
+// counts only object-nesting levels). Guards against pathological schemas
+// such as `oneOf -> oneOf -> oneOf -> …` chains where each step doesn't
+// consume the nesting budget but still grows the stack.
+const MAX_WALK_DEPTH: usize = 32;
 
-    let mut table_rows: Vec<Vec<String>> = vec![vec![
+fn walk_schema(
+    rows: &mut Vec<Vec<String>>,
+    prefix: &str,
+    schema: &serde_json::Value,
+    depth_budget: usize,
+    walk_depth: usize,
+) {
+    if walk_depth >= MAX_WALK_DEPTH {
+        return;
+    }
+
+    // Step 1: emit sibling `properties` first so base fields (often required
+    // and shared across all variants) come before any variant-specific ones.
+    if let Some(props_obj) = schema.get("properties").and_then(|v| v.as_object()) {
+        let required_fields: std::collections::HashSet<String> = schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        for (field_name, field_schema) in props_obj {
+            let path = if prefix.is_empty() {
+                field_name.clone()
+            } else {
+                format!("{}.{}", prefix, field_name)
+            };
+            let type_str = extract_type(field_schema);
+            let is_req = required_fields.contains(field_name);
+            let desc = compose_description(field_schema);
+
+            rows.push(vec![
+                path.clone(),
+                type_str.clone(),
+                if is_req { "yes".into() } else { "no".into() },
+                desc,
+            ]);
+
+            if depth_budget == 0 {
+                continue;
+            }
+
+            // Recurse: object properties, oneOf/anyOf variants, or array item schemas.
+            if field_schema.get("properties").is_some()
+                || field_schema.get("oneOf").is_some()
+                || field_schema.get("anyOf").is_some()
+            {
+                walk_schema(rows, &path, field_schema, depth_budget - 1, walk_depth + 1);
+            } else if type_str == "array" {
+                if let Some(items) = field_schema.get("items") {
+                    let items_prefix = format!("{}[]", path);
+                    walk_schema(rows, &items_prefix, items, depth_budget - 1, walk_depth + 1);
+                }
+            }
+        }
+    }
+
+    // Step 2: walk the first variant of any oneOf/anyOf at this node. Variants
+    // compose with sibling `properties` in JSON Schema (base + variant pattern),
+    // so we must visit both — not return early after the union branch. Union
+    // descent does not consume `depth_budget` (variants are alternatives at
+    // the same logical level), but `walk_depth` always increments so chained
+    // union wrappers cannot bypass MAX_WALK_DEPTH.
+    for key in ["oneOf", "anyOf"] {
+        if let Some(variants) = schema.get(key).and_then(|v| v.as_array()) {
+            if let Some(first) = variants.first() {
+                walk_schema(rows, prefix, first, depth_budget, walk_depth + 1);
+            }
+            break;
+        }
+    }
+}
+
+// Returns `None` when the schema produces no field rows (e.g. a oneOf whose
+// first variant is a scalar, or a bare `{"type": "string"}` body) — the caller
+// should fall back to type/description text instead of printing an empty table.
+fn format_schema_table(schema: &serde_json::Value, depth_budget: usize) -> Option<String> {
+    let header: Vec<String> = vec![
         "FIELD".into(),
         "TYPE".into(),
         "REQUIRED".into(),
         "DESCRIPTION".into(),
-    ]];
+    ];
+    let mut table_rows: Vec<Vec<String>> = vec![header];
 
-    for (field_name, field_schema) in props_obj {
-        let type_str = extract_type(field_schema);
-        let is_req = required_fields.contains(field_name);
-        let desc = field_schema
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+    walk_schema(&mut table_rows, "", schema, depth_budget, 0);
 
-        table_rows.push(vec![
-            field_name.clone(),
-            type_str,
-            if is_req { "yes".into() } else { "no".into() },
-            desc.to_string(),
-        ]);
+    if table_rows.len() == 1 {
+        return None;
     }
 
     let aligned = formatter::align_columns(&table_rows, 2);
@@ -466,7 +535,7 @@ fn format_schema_table(
     for line in &aligned {
         out.push_str(&format!("  {}\n", line));
     }
-    out
+    Some(out)
 }
 
 fn extract_type(schema: &serde_json::Value) -> String {
@@ -476,7 +545,90 @@ fn extract_type(schema: &serde_json::Value) -> String {
     if let Some(r) = schema.get("$ref").and_then(|v| v.as_str()) {
         return r.rsplit('/').next().unwrap_or("object").to_string();
     }
+    // Infer type from enum values when `type` is missing — skip nulls since
+    // JSON Schema encodes nullability as `[null, "actual"]`, and fall back to
+    // `any` if enum members span multiple scalar types.
+    if let Some(arr) = schema.get("enum").and_then(|v| v.as_array()) {
+        if let Some(enum_type) = infer_enum_type(arr) {
+            return enum_type;
+        }
+    }
+    if let Some(c) = schema.get("const") {
+        return infer_scalar_type(c);
+    }
     "any".to_string()
+}
+
+fn infer_enum_type(values: &[serde_json::Value]) -> Option<String> {
+    let mut inferred: Option<String> = None;
+
+    for value in values {
+        if value.is_null() {
+            continue;
+        }
+
+        let value_type = infer_scalar_type(value);
+        if value_type == "any" {
+            return Some("any".into());
+        }
+
+        match &inferred {
+            None => inferred = Some(value_type),
+            Some(existing) if existing == &value_type => {}
+            Some(_) => return Some("any".into()),
+        }
+    }
+
+    inferred
+}
+
+fn infer_scalar_type(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(_) => "string".into(),
+        serde_json::Value::Number(_) => "number".into(),
+        serde_json::Value::Bool(_) => "boolean".into(),
+        _ => "any".into(),
+    }
+}
+
+fn json_scalar_display(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => "null".into(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        _ => v.to_string(),
+    }
+}
+
+// Extracts value-level constraints (const / enum) as a bracketed prefix to
+// splice into the DESCRIPTION column. Keeping constraints in the description
+// leaves TYPE as pure JSON-type info and avoids blowing the table layout when
+// enums contain many values.
+fn schema_constraints(schema: &serde_json::Value) -> Option<String> {
+    if let Some(c) = schema.get("const") {
+        return Some(format!("[const: {}]", json_scalar_display(c)));
+    }
+    if let Some(arr) = schema.get("enum").and_then(|v| v.as_array()) {
+        if arr.is_empty() {
+            return None;
+        }
+        if arr.len() == 1 {
+            return Some(format!("[const: {}]", json_scalar_display(&arr[0])));
+        }
+        let values: Vec<String> = arr.iter().map(json_scalar_display).collect();
+        return Some(format!("[enum: {}]", values.join("|")));
+    }
+    None
+}
+
+fn compose_description(schema: &serde_json::Value) -> String {
+    let desc = schema.get("description").and_then(|v| v.as_str()).unwrap_or("");
+    match (schema_constraints(schema), desc.is_empty()) {
+        (Some(c), true) => c,
+        (Some(c), false) => format!("{} {}", c, desc),
+        (None, _) => desc.to_string(),
+    }
 }
 
 fn format_action_detail(data: &ActionDetail) -> String {
@@ -550,10 +702,8 @@ fn format_action_detail(data: &ActionDetail) -> String {
         if let Some(ref schema) = body.schema {
             output.push_str("\n  ## Request Body\n\n");
 
-            if let Some(props) = schema.get("properties") {
-                if let Some(props_obj) = props.as_object() {
-                    output.push_str(&format_schema_table(props_obj, schema));
-                }
+            if let Some(table) = format_schema_table(schema, REQUEST_SCHEMA_DEPTH) {
+                output.push_str(&table);
             } else if let Some(desc) = schema.get("description").and_then(|v| v.as_str()) {
                 let type_str = schema.get("type").and_then(|v| v.as_str()).unwrap_or("object");
                 output.push_str(&format!("  Type: {}\n", type_str));
@@ -570,11 +720,9 @@ fn format_action_detail(data: &ActionDetail) -> String {
 
             // Render response schema fields if available
             if let Some(ref schema) = r.schema {
-                if let Some(props) = schema.get("properties") {
-                    if let Some(props_obj) = props.as_object() {
-                        output.push('\n');
-                        output.push_str(&format_schema_table(props_obj, schema));
-                    }
+                if let Some(table) = format_schema_table(schema, RESPONSE_SCHEMA_DEPTH) {
+                    output.push('\n');
+                    output.push_str(&table);
                 }
             }
         }
@@ -648,6 +796,11 @@ mod tests {
             "Parent"
         );
         assert_eq!(extract_type(&json!({})), "any");
+        assert_eq!(
+            extract_type(&json!({"enum": ["queued", "running", null]})),
+            "string"
+        );
+        assert_eq!(extract_type(&json!({"enum": [1, "auto"]})), "any");
     }
 
     #[test]
@@ -889,5 +1042,110 @@ mod tests {
         assert!(output.contains("page_id"));
         assert!(output.contains("string"));
         assert!(output.contains("yes"));
+    }
+
+    #[test]
+    fn walk_schema_preserves_base_properties_with_oneof() {
+        // Regression for codex-bot review on PR #5: a schema with sibling
+        // `properties` next to a `oneOf` used to skip the base properties
+        // entirely after recursing into the first variant.
+        let schema = json!({
+            "type": "object",
+            "required": ["common"],
+            "properties": {
+                "common": { "type": "string", "description": "Always present" },
+                "id":     { "type": "string", "description": "Stable id" }
+            },
+            "oneOf": [
+                {
+                    "properties": {
+                        "variantField": { "type": "number", "description": "Variant-specific" }
+                    }
+                }
+            ]
+        });
+        let table = format_schema_table(&schema, REQUEST_SCHEMA_DEPTH).expect("table");
+        assert!(table.contains("common"), "base property `common` must appear");
+        assert!(table.contains("Always present"));
+        assert!(table.contains("id"), "base property `id` must appear");
+        assert!(table.contains("variantField"), "variant field must appear");
+        assert!(table.contains("Variant-specific"));
+
+        // Base properties should be rendered before variant fields so the
+        // shared/required parts read first.
+        let common_pos = table.find("common").unwrap();
+        let variant_pos = table.find("variantField").unwrap();
+        assert!(common_pos < variant_pos, "base props must precede variant fields");
+    }
+
+    #[test]
+    fn walk_schema_caps_pathological_union_chain() {
+        // Regression for codex-bot review on PR #5: a long oneOf chain bypassed
+        // depth_budget because union descent doesn't consume it. MAX_WALK_DEPTH
+        // is the absolute guard that prevents stack/runtime blowups on
+        // pathological specs. Wrap a leaf object in 200 oneOf layers — must
+        // return without panicking or stack-overflowing.
+        let mut schema = json!({
+            "properties": { "leaf": { "type": "string", "description": "innermost" } }
+        });
+        for _ in 0..200 {
+            schema = json!({ "oneOf": [schema] });
+        }
+        // The outer layers exceed MAX_WALK_DEPTH so the leaf is unreachable —
+        // the test's purpose is just to confirm the call terminates safely.
+        let result = format_schema_table(&schema, REQUEST_SCHEMA_DEPTH);
+        // Either None (no rows) or Some(table); both are acceptable. The
+        // important thing is we got here without panicking.
+        let _ = result;
+    }
+
+    #[test]
+    fn format_schema_table_returns_none_for_scalar_oneof() {
+        // oneOf whose first variant is a scalar — walk_schema produces no rows,
+        // so we must return None to let the caller fall back to type/description text.
+        let schema = json!({
+            "oneOf": [
+                { "type": "string", "description": "Raw JSON string body" }
+            ]
+        });
+        assert!(format_schema_table(&schema, REQUEST_SCHEMA_DEPTH).is_none());
+    }
+
+    #[test]
+    fn format_action_detail_falls_back_for_scalar_oneof_body() {
+        // Regression for codex-bot review on PR #5: a oneOf body whose first
+        // variant is non-object used to render an empty table and drop the
+        // type/description fallback entirely.
+        let data: ActionDetail = serde_json::from_value(json!({
+            "site": "demo",
+            "group": "raw",
+            "action": "send_text",
+            "method": "POST",
+            "path": "/v1/text",
+            "base_url": "https://example.com",
+            "description": "Send a raw text payload.",
+            "parameters": [],
+            "requestBody": {
+                "contentType": "application/json",
+                "schema": {
+                    "type": "string",
+                    "description": "The raw body content to send.",
+                    "oneOf": [
+                        { "type": "string", "description": "A plain string." }
+                    ]
+                }
+            },
+            "responses": [
+                { "status": "200", "description": "OK", "schema": {} }
+            ],
+            "authentication": null
+        }))
+        .unwrap();
+
+        let output = format_action_detail(&data);
+        assert!(output.contains("## Request Body"));
+        assert!(output.contains("Type: string"));
+        assert!(output.contains("The raw body content to send."));
+        assert!(!output.contains("FIELD"));
     }
 }
