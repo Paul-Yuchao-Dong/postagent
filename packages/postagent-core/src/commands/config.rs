@@ -28,6 +28,13 @@ pub fn get_value(key: &str) -> Option<String> {
     load_config(&path).get(key).cloned()
 }
 
+pub fn resolve_api_key() -> Option<String> {
+    std::env::var("POSTAGENT_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| get_value("apiKey"))
+}
+
 fn save_config(path: &Path, config: &BTreeMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
