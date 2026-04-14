@@ -428,16 +428,78 @@ fn action_to_title(action: &str) -> String {
         .join(" ")
 }
 
-fn format_schema_table(
-    props_obj: &serde_json::Map<String, serde_json::Value>,
+// Full recursion budget for request bodies — LLMs need the complete shape to
+// compose the JSON. Bounded to guard against pathological schemas.
+const REQUEST_SCHEMA_DEPTH: usize = 5;
+// Responses are consumed, not composed — top-level fields sketch the shape
+// cheaply; deep structure belongs in --format json for anyone who needs it.
+const RESPONSE_SCHEMA_DEPTH: usize = 0;
+
+fn walk_schema(
+    rows: &mut Vec<Vec<String>>,
+    prefix: &str,
     schema: &serde_json::Value,
-) -> String {
+    depth_budget: usize,
+) {
+    // Multi-variant schemas (oneOf/anyOf) — render only the first variant for
+    // now. This keeps output compact and avoids fabricating variant labels;
+    // full union rendering is a future concern once normalization lands.
+    for key in ["oneOf", "anyOf"] {
+        if let Some(variants) = schema.get(key).and_then(|v| v.as_array()) {
+            if let Some(first) = variants.first() {
+                walk_schema(rows, prefix, first, depth_budget);
+            }
+            return;
+        }
+    }
+
+    let Some(props_obj) = schema.get("properties").and_then(|v| v.as_object()) else {
+        return;
+    };
+
     let required_fields: std::collections::HashSet<String> = schema
         .get("required")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
+    for (field_name, field_schema) in props_obj {
+        let path = if prefix.is_empty() {
+            field_name.clone()
+        } else {
+            format!("{}.{}", prefix, field_name)
+        };
+        let type_str = extract_type(field_schema);
+        let is_req = required_fields.contains(field_name);
+        let desc = compose_description(field_schema);
+
+        rows.push(vec![
+            path.clone(),
+            type_str.clone(),
+            if is_req { "yes".into() } else { "no".into() },
+            desc,
+        ]);
+
+        if depth_budget == 0 {
+            continue;
+        }
+
+        // Recurse: object properties, oneOf/anyOf variants, or array item schemas.
+        if field_schema.get("properties").is_some()
+            || field_schema.get("oneOf").is_some()
+            || field_schema.get("anyOf").is_some()
+        {
+            walk_schema(rows, &path, field_schema, depth_budget - 1);
+        } else if type_str == "array" {
+            if let Some(items) = field_schema.get("items") {
+                let items_prefix = format!("{}[]", path);
+                walk_schema(rows, &items_prefix, items, depth_budget - 1);
+            }
+        }
+    }
+}
+
+fn format_schema_table(schema: &serde_json::Value, depth_budget: usize) -> String {
     let mut table_rows: Vec<Vec<String>> = vec![vec![
         "FIELD".into(),
         "TYPE".into(),
@@ -445,21 +507,7 @@ fn format_schema_table(
         "DESCRIPTION".into(),
     ]];
 
-    for (field_name, field_schema) in props_obj {
-        let type_str = extract_type(field_schema);
-        let is_req = required_fields.contains(field_name);
-        let desc = field_schema
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        table_rows.push(vec![
-            field_name.clone(),
-            type_str,
-            if is_req { "yes".into() } else { "no".into() },
-            desc.to_string(),
-        ]);
-    }
+    walk_schema(&mut table_rows, "", schema, depth_budget);
 
     let aligned = formatter::align_columns(&table_rows, 2);
     let mut out = String::new();
@@ -476,7 +524,66 @@ fn extract_type(schema: &serde_json::Value) -> String {
     if let Some(r) = schema.get("$ref").and_then(|v| v.as_str()) {
         return r.rsplit('/').next().unwrap_or("object").to_string();
     }
+    // Infer type from enum values when `type` is missing — skip nulls since
+    // JSON Schema encodes nullability as `[null, "actual"]`.
+    if let Some(arr) = schema.get("enum").and_then(|v| v.as_array()) {
+        if let Some(first) = arr.iter().find(|v| !v.is_null()) {
+            return infer_scalar_type(first);
+        }
+    }
+    if let Some(c) = schema.get("const") {
+        return infer_scalar_type(c);
+    }
     "any".to_string()
+}
+
+fn infer_scalar_type(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(_) => "string".into(),
+        serde_json::Value::Number(_) => "number".into(),
+        serde_json::Value::Bool(_) => "boolean".into(),
+        _ => "any".into(),
+    }
+}
+
+fn json_scalar_display(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => "null".into(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        _ => v.to_string(),
+    }
+}
+
+// Extracts value-level constraints (const / enum) as a bracketed prefix to
+// splice into the DESCRIPTION column. Keeping constraints in the description
+// leaves TYPE as pure JSON-type info and avoids blowing the table layout when
+// enums contain many values.
+fn schema_constraints(schema: &serde_json::Value) -> Option<String> {
+    if let Some(c) = schema.get("const") {
+        return Some(format!("[const: {}]", json_scalar_display(c)));
+    }
+    if let Some(arr) = schema.get("enum").and_then(|v| v.as_array()) {
+        if arr.is_empty() {
+            return None;
+        }
+        if arr.len() == 1 {
+            return Some(format!("[const: {}]", json_scalar_display(&arr[0])));
+        }
+        let values: Vec<String> = arr.iter().map(json_scalar_display).collect();
+        return Some(format!("[enum: {}]", values.join("|")));
+    }
+    None
+}
+
+fn compose_description(schema: &serde_json::Value) -> String {
+    let desc = schema.get("description").and_then(|v| v.as_str()).unwrap_or("");
+    match (schema_constraints(schema), desc.is_empty()) {
+        (Some(c), true) => c,
+        (Some(c), false) => format!("{} {}", c, desc),
+        (None, _) => desc.to_string(),
+    }
 }
 
 fn format_action_detail(data: &ActionDetail) -> String {
@@ -550,10 +657,11 @@ fn format_action_detail(data: &ActionDetail) -> String {
         if let Some(ref schema) = body.schema {
             output.push_str("\n  ## Request Body\n\n");
 
-            if let Some(props) = schema.get("properties") {
-                if let Some(props_obj) = props.as_object() {
-                    output.push_str(&format_schema_table(props_obj, schema));
-                }
+            let has_fields = schema.get("properties").is_some()
+                || schema.get("oneOf").is_some()
+                || schema.get("anyOf").is_some();
+            if has_fields {
+                output.push_str(&format_schema_table(schema, REQUEST_SCHEMA_DEPTH));
             } else if let Some(desc) = schema.get("description").and_then(|v| v.as_str()) {
                 let type_str = schema.get("type").and_then(|v| v.as_str()).unwrap_or("object");
                 output.push_str(&format!("  Type: {}\n", type_str));
@@ -570,11 +678,12 @@ fn format_action_detail(data: &ActionDetail) -> String {
 
             // Render response schema fields if available
             if let Some(ref schema) = r.schema {
-                if let Some(props) = schema.get("properties") {
-                    if let Some(props_obj) = props.as_object() {
-                        output.push('\n');
-                        output.push_str(&format_schema_table(props_obj, schema));
-                    }
+                let has_fields = schema.get("properties").is_some()
+                    || schema.get("oneOf").is_some()
+                    || schema.get("anyOf").is_some();
+                if has_fields {
+                    output.push('\n');
+                    output.push_str(&format_schema_table(schema, RESPONSE_SCHEMA_DEPTH));
                 }
             }
         }
