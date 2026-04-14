@@ -499,22 +499,30 @@ fn walk_schema(
     }
 }
 
-fn format_schema_table(schema: &serde_json::Value, depth_budget: usize) -> String {
-    let mut table_rows: Vec<Vec<String>> = vec![vec![
+// Returns `None` when the schema produces no field rows (e.g. a oneOf whose
+// first variant is a scalar, or a bare `{"type": "string"}` body) — the caller
+// should fall back to type/description text instead of printing an empty table.
+fn format_schema_table(schema: &serde_json::Value, depth_budget: usize) -> Option<String> {
+    let header: Vec<String> = vec![
         "FIELD".into(),
         "TYPE".into(),
         "REQUIRED".into(),
         "DESCRIPTION".into(),
-    ]];
+    ];
+    let mut table_rows: Vec<Vec<String>> = vec![header];
 
     walk_schema(&mut table_rows, "", schema, depth_budget);
+
+    if table_rows.len() == 1 {
+        return None;
+    }
 
     let aligned = formatter::align_columns(&table_rows, 2);
     let mut out = String::new();
     for line in &aligned {
         out.push_str(&format!("  {}\n", line));
     }
-    out
+    Some(out)
 }
 
 fn extract_type(schema: &serde_json::Value) -> String {
@@ -657,11 +665,8 @@ fn format_action_detail(data: &ActionDetail) -> String {
         if let Some(ref schema) = body.schema {
             output.push_str("\n  ## Request Body\n\n");
 
-            let has_fields = schema.get("properties").is_some()
-                || schema.get("oneOf").is_some()
-                || schema.get("anyOf").is_some();
-            if has_fields {
-                output.push_str(&format_schema_table(schema, REQUEST_SCHEMA_DEPTH));
+            if let Some(table) = format_schema_table(schema, REQUEST_SCHEMA_DEPTH) {
+                output.push_str(&table);
             } else if let Some(desc) = schema.get("description").and_then(|v| v.as_str()) {
                 let type_str = schema.get("type").and_then(|v| v.as_str()).unwrap_or("object");
                 output.push_str(&format!("  Type: {}\n", type_str));
@@ -678,12 +683,9 @@ fn format_action_detail(data: &ActionDetail) -> String {
 
             // Render response schema fields if available
             if let Some(ref schema) = r.schema {
-                let has_fields = schema.get("properties").is_some()
-                    || schema.get("oneOf").is_some()
-                    || schema.get("anyOf").is_some();
-                if has_fields {
+                if let Some(table) = format_schema_table(schema, RESPONSE_SCHEMA_DEPTH) {
                     output.push('\n');
-                    output.push_str(&format_schema_table(schema, RESPONSE_SCHEMA_DEPTH));
+                    output.push_str(&table);
                 }
             }
         }
@@ -998,5 +1000,55 @@ mod tests {
         assert!(output.contains("page_id"));
         assert!(output.contains("string"));
         assert!(output.contains("yes"));
+    }
+
+    #[test]
+    fn format_schema_table_returns_none_for_scalar_oneof() {
+        // oneOf whose first variant is a scalar — walk_schema produces no rows,
+        // so we must return None to let the caller fall back to type/description text.
+        let schema = json!({
+            "oneOf": [
+                { "type": "string", "description": "Raw JSON string body" }
+            ]
+        });
+        assert!(format_schema_table(&schema, REQUEST_SCHEMA_DEPTH).is_none());
+    }
+
+    #[test]
+    fn format_action_detail_falls_back_for_scalar_oneof_body() {
+        // Regression for codex-bot review on PR #5: a oneOf body whose first
+        // variant is non-object used to render an empty table and drop the
+        // type/description fallback entirely.
+        let data: ActionDetail = serde_json::from_value(json!({
+            "site": "demo",
+            "group": "raw",
+            "action": "send_text",
+            "method": "POST",
+            "path": "/v1/text",
+            "base_url": "https://example.com",
+            "description": "Send a raw text payload.",
+            "parameters": [],
+            "requestBody": {
+                "contentType": "application/json",
+                "schema": {
+                    "type": "string",
+                    "description": "The raw body content to send.",
+                    "oneOf": [
+                        { "type": "string", "description": "A plain string." }
+                    ]
+                }
+            },
+            "responses": [
+                { "status": "200", "description": "OK", "schema": {} }
+            ],
+            "authentication": null
+        }))
+        .unwrap();
+
+        let output = format_action_detail(&data);
+        assert!(output.contains("## Request Body"));
+        assert!(output.contains("Type: string"));
+        assert!(output.contains("The raw body content to send."));
+        assert!(!output.contains("FIELD"));
     }
 }
