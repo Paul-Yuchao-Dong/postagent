@@ -66,9 +66,17 @@ fn render_with(input: &str, redirect_uri: &str, ansi: bool) -> String {
         }
 
         if in_fence {
-            out.push_str("    ");
+            // Flush-left, whitespace-trimmed so the user can triple-click a
+            // URL line and paste it without leading indent or trailing blanks.
+            // Source-level indentation inside the fence is a markdown-authoring
+            // artifact, not meaningful content.
+            let body = line.trim();
+            if body.is_empty() {
+                out.push_str(nl);
+                continue;
+            }
             out.push_str(dim_on);
-            out.push_str(&line);
+            out.push_str(body);
             out.push_str(dim_off);
             out.push_str(nl);
             continue;
@@ -224,12 +232,23 @@ mod tests {
     }
 
     #[test]
-    fn fenced_block_indents_and_dims() {
+    fn fenced_block_flush_left_and_dims() {
         let out = render_with("before\n```\nline1\nline2\n```\nafter\n", "http://x", true);
         assert!(out.contains("before\n"));
-        assert!(out.contains("    \x1b[2mline1\x1b[0m\n"));
-        assert!(out.contains("    \x1b[2mline2\x1b[0m\n"));
+        assert!(out.contains("\x1b[2mline1\x1b[0m\n"));
+        assert!(out.contains("\x1b[2mline2\x1b[0m\n"));
+        assert!(!out.contains("    \x1b[2mline1"));
         assert!(out.contains("after\n"));
+    }
+
+    #[test]
+    fn fenced_block_strips_source_indent_and_trailing_spaces() {
+        let out = render_with(
+            "```\n   http://example.com/callback   \n```\n",
+            "http://x",
+            false,
+        );
+        assert_eq!(out, "http://example.com/callback\n");
     }
 
     #[test]
@@ -259,7 +278,7 @@ mod tests {
     fn golden_notion_instructions() {
         let src = "### Create a Notion public integration\n\n1. Open [Notion integrations](https://www.notion.so/my-integrations)\n2. Click **New integration**\n3. Set the redirect URI:\n\n   ```\n   {{redirect_uri}}\n   ```\n\n4. Save\n";
         let out = render_with(src, "http://127.0.0.1:9876/callback", false);
-        let expected = "Create a Notion public integration\n\n1. Open Notion integrations (https://www.notion.so/my-integrations)\n2. Click New integration\n3. Set the redirect URI:\n\n       http://127.0.0.1:9876/callback\n\n4. Save\n";
+        let expected = "Create a Notion public integration\n\n1. Open Notion integrations (https://www.notion.so/my-integrations)\n2. Click New integration\n3. Set the redirect URI:\n\nhttp://127.0.0.1:9876/callback\n\n4. Save\n";
         assert_eq!(out, expected);
     }
 }

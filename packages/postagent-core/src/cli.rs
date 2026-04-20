@@ -76,7 +76,7 @@ Examples:
   postagent auth github --token ghp_xxxxxxxxxxxx
   postagent auth notion --client-id CID --client-secret CSEC
   postagent auth atlassian --param tenant=acme --scope offline_access
-  postagent auth notion --no-browser
+  postagent auth notion --dry-run
   postagent auth notion logout
   postagent auth notion reset
   postagent auth notion status
@@ -104,9 +104,9 @@ Saved credentials are referenced in `send` via $POSTAGENT.<SITE>.TOKEN
         #[arg(long = "client-secret")]
         client_secret: Option<String>,
 
-        /// Print authorize URL instead of opening a browser
-        #[arg(long = "no-browser")]
-        no_browser: bool,
+        /// Dry run: print the authorize URL without launching a browser
+        #[arg(long = "dry-run")]
+        dry_run: bool,
 
         /// Fill required authorize-URL placeholder (repeatable), e.g. --param tenant=acme
         #[arg(long = "param", value_parser = parse_key_value, num_args = 1)]
@@ -300,7 +300,7 @@ mod tests {
             "CID",
             "--client-secret",
             "SEC",
-            "--no-browser",
+            "--dry-run",
             "--param",
             "tenant=acme",
             "--scope",
@@ -311,7 +311,7 @@ mod tests {
                 method,
                 client_id,
                 client_secret,
-                no_browser,
+                dry_run,
                 param,
                 scope,
                 ..
@@ -319,7 +319,7 @@ mod tests {
                 assert_eq!(method.as_deref(), Some("oauth"));
                 assert_eq!(client_id.as_deref(), Some("CID"));
                 assert_eq!(client_secret.as_deref(), Some("SEC"));
-                assert!(no_browser);
+                assert!(dry_run);
                 assert_eq!(param, vec![("tenant".into(), "acme".into())]);
                 assert_eq!(scope, vec!["offline_access".to_string()]);
             }

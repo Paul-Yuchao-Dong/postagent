@@ -12,7 +12,7 @@ pub struct LoginArgs<'a> {
     pub method: Option<&'a str>,
     pub client_id: Option<&'a str>,
     pub client_secret: Option<&'a str>,
-    pub no_browser: bool,
+    pub dry_run: bool,
     pub params: &'a [(String, String)],
     pub scopes: &'a [String],
 }
@@ -628,7 +628,7 @@ fn handle_oauth2(
         client_secret: client_secret.as_deref(),
         scopes_override,
         placeholder_values: placeholders,
-        no_browser: args.no_browser,
+        dry_run: args.dry_run,
         timeout: Duration::from_secs(120),
     };
 

@@ -18,7 +18,7 @@ pub struct AuthParams<'a> {
     pub scopes_override: Option<Vec<String>>,
     /// Values for params_required placeholders referenced in extra_params.
     pub placeholder_values: BTreeMap<String, String>,
-    pub no_browser: bool,
+    pub dry_run: bool,
     pub timeout: Duration,
 }
 
@@ -47,17 +47,16 @@ pub fn run_authorization_code_flow(
     // conflict — so just let `listen_for_callback` own binding and surface
     // PortInUse as a clear error with exit 1 in the caller.
 
-    if params.no_browser {
-        eprintln!(
-            "Open this URL in a browser to authorize postagent:\n  {}\n",
-            authorize_url
-        );
+    // URLs go on their own lines with no surrounding prose so a triple-click
+    // / select-line copies cleanly. The human label goes on the line above.
+    eprintln!("Will open in browser:");
+    eprintln!("{}", authorize_url);
+    eprintln!();
+    eprintln!("Listening for callback ({}s timeout):", params.timeout.as_secs());
+    eprintln!("{}", REDIRECT_URI);
+    if params.dry_run {
+        eprintln!("(dry run — browser not launched; open the authorize URL manually to complete the flow)");
     } else {
-        eprintln!(
-            "Listening on {} ({}s timeout)",
-            REDIRECT_URI,
-            params.timeout.as_secs()
-        );
         eprintln!("Opening browser ...");
         browser::open(&authorize_url);
     }
