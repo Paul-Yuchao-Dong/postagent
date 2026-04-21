@@ -652,7 +652,9 @@ fn handle_oauth2(
     };
 
     // Persist the app.yaml before we go through the browser flow so the user
-    // doesn't have to retype credentials if the callback step fails.
+    // doesn't have to retype credentials if the callback step fails. For
+    // provider-backed sites we also link the site pointer up front so
+    // status/reset can see the shared app.yaml during dry-runs or failures.
     let app = AppConfig {
         method_id: method.id.clone(),
         client_id: client_id.clone(),
@@ -660,7 +662,7 @@ fn handle_oauth2(
         descriptor_hash: desc_hash.clone(),
     };
     if let Some(provider) = provider {
-        token::save_provider_app(provider, &app)?;
+        token::link_provider_app(site, provider, &app)?;
     } else {
         token::save_app(site, &app)?;
     }
@@ -731,7 +733,6 @@ fn handle_oauth2(
     };
     if let Some(provider) = provider {
         token::save_provider_auth(provider, &auth)?;
-        token::save_provider_pointer(site, provider)?;
     } else {
         token::save_auth(site, &auth)?;
     }
