@@ -305,7 +305,7 @@ fn clear_menu(n: usize) {
 #[cfg(unix)]
 fn select_scopes_interactive(
     catalog: &[descriptor::ScopeCatalogEntry],
-    defaults: &std::collections::BTreeSet<String>,
+    defaults: &[String],
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
     use std::io::Read;
     use std::os::unix::io::AsRawFd;
@@ -342,7 +342,12 @@ fn select_scopes_interactive(
         libc::tcsetattr(fd, libc::TCSANOW, &t);
     }
 
-    let mut selected: Vec<bool> = catalog.iter().map(|e| defaults.contains(&e.name)).collect();
+    let default_set: std::collections::BTreeSet<&str> =
+        defaults.iter().map(std::string::String::as_str).collect();
+    let mut selected: Vec<bool> = catalog
+        .iter()
+        .map(|entry| default_set.contains(entry.name.as_str()))
+        .collect();
 
     eprintln!("Select OAuth scopes (↑/↓ move, Space toggle, a = all, Enter confirm, Esc cancel):");
     eprintln!("  Defaults are pre-selected; the first row toggles every scope at once.");
@@ -418,11 +423,7 @@ fn select_scopes_interactive(
         return Ok(None);
     }
 
-    let chosen: Vec<String> = catalog
-        .iter()
-        .zip(selected.iter())
-        .filter_map(|(e, s)| if *s { Some(e.name.clone()) } else { None })
-        .collect();
+    let chosen = confirmed_scope_selection(catalog, &selected, defaults);
 
     eprintln!(
         "  → {} scope{} selected",
@@ -439,6 +440,35 @@ fn toggle_all(selected: &mut [bool]) {
     for s in selected.iter_mut() {
         *s = new_state;
     }
+}
+
+#[cfg(unix)]
+fn confirmed_scope_selection(
+    catalog: &[descriptor::ScopeCatalogEntry],
+    selected: &[bool],
+    defaults: &[String],
+) -> Vec<String> {
+    let mut chosen: Vec<String> = catalog
+        .iter()
+        .zip(selected.iter())
+        .filter_map(|(entry, picked)| {
+            if *picked {
+                Some(entry.name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let catalog_names: std::collections::BTreeSet<&str> =
+        catalog.iter().map(|entry| entry.name.as_str()).collect();
+    for scope in defaults {
+        if !catalog_names.contains(scope.as_str()) && !chosen.iter().any(|picked| picked == scope) {
+            chosen.push(scope.clone());
+        }
+    }
+
+    chosen
 }
 
 #[cfg(unix)]
@@ -512,7 +542,7 @@ fn save_static(
         api_key: Some(secret.to_string()),
         ..Default::default()
     };
-    token::save_auth(site, &auth)?;
+    token::save_site_auth_local(site, &auth)?;
 
     let key_var = format!("$POSTAGENT.{}.API_KEY", site.to_uppercase());
     println!(
@@ -627,9 +657,7 @@ fn handle_oauth2(
     if scopes_override.is_none() && atty_check() {
         if let Some(catalog) = method.scopes.catalog.as_ref() {
             if !catalog.is_empty() {
-                let defaults: std::collections::BTreeSet<String> =
-                    method.scopes.default.iter().cloned().collect();
-                if let Some(picked) = select_scopes_interactive(catalog, &defaults)? {
+                if let Some(picked) = select_scopes_interactive(catalog, &method.scopes.default)? {
                     scopes_override = Some(picked);
                 }
                 // Esc / cancel → fall through with scopes_override = None so
@@ -1238,5 +1266,30 @@ mod tests {
         );
         assert!(msg.contains("sibling sites"));
         assert!(msg.contains("shared tokens"));
+    }
+
+    #[test]
+    fn confirmed_scope_selection_preserves_defaults_missing_from_catalog() {
+        let catalog = vec![
+            descriptor::ScopeCatalogEntry {
+                name: "repo".into(),
+                description: Some("Repo access".into()),
+            },
+            descriptor::ScopeCatalogEntry {
+                name: "read:user".into(),
+                description: Some("Profile access".into()),
+            },
+        ];
+
+        let chosen = confirmed_scope_selection(
+            &catalog,
+            &[true, false],
+            &["repo".into(), "offline_access".into()],
+        );
+
+        assert_eq!(
+            chosen,
+            vec!["repo".to_string(), "offline_access".to_string()]
+        );
     }
 }

@@ -6,7 +6,7 @@ pub const REDIRECT_ADDR: &str = "127.0.0.1:9876";
 const MAX_REQUEST_LINE_BYTES: usize = 8192;
 
 /// Result of a successful callback hit.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallbackData {
     pub code: Option<String>,
     pub state: Option<String>,
@@ -37,8 +37,9 @@ impl std::fmt::Display for LoopbackError {
 
 impl std::error::Error for LoopbackError {}
 
-/// Binds to `127.0.0.1:9876`, accepts one `GET /callback?...` request,
-/// returns the query-string params. Times out after `timeout`.
+/// Binds to `127.0.0.1:9876`, accepts one valid `GET /callback?...` request,
+/// returns the query-string params. Non-callback / malformed hits are ignored
+/// until timeout.
 pub fn listen_for_callback(timeout: Duration) -> Result<CallbackData, LoopbackError> {
     let listener = TcpListener::bind(REDIRECT_ADDR).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
@@ -51,9 +52,7 @@ pub fn listen_for_callback(timeout: Duration) -> Result<CallbackData, LoopbackEr
     // Non-blocking accept with a bounded deadline: simpler than threading, and
     // works fine for a single callback. Ctrl-C bypasses this through the OS
     // default SIGINT handler (exit 130).
-    listener
-        .set_nonblocking(true)
-        .map_err(LoopbackError::Io)?;
+    listener.set_nonblocking(true).map_err(LoopbackError::Io)?;
 
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -63,36 +62,30 @@ pub fn listen_for_callback(timeout: Duration) -> Result<CallbackData, LoopbackEr
 
         match listener.accept() {
             Ok((mut stream, _)) => {
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .ok();
-                stream
-                    .set_write_timeout(Some(Duration::from_secs(5)))
-                    .ok();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
 
-                let request_line = read_request_line(&mut stream).unwrap_or_default();
-                let params = parse_query_from_request_line(&request_line);
-
-                let data = CallbackData {
-                    code: params.iter().find(|(k, _)| k == "code").map(|(_, v)| v.clone()),
-                    state: params.iter().find(|(k, _)| k == "state").map(|(_, v)| v.clone()),
-                    error: params.iter().find(|(k, _)| k == "error").map(|(_, v)| v.clone()),
-                    error_description: params
-                        .iter()
-                        .find(|(k, _)| k == "error_description")
-                        .map(|(_, v)| v.clone()),
+                let Some(request_line) = read_request_line(&mut stream) else {
+                    continue;
                 };
 
-                let body = success_page();
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
+                if let Some(data) = callback_data_from_request_line(&request_line) {
+                    let _ = write_response(
+                        &mut stream,
+                        "200 OK",
+                        "text/html; charset=utf-8",
+                        &success_page(),
+                    );
+                    return Ok(data);
+                }
+
+                let _ = write_response(
+                    &mut stream,
+                    "404 Not Found",
+                    "text/plain; charset=utf-8",
+                    "postagent is waiting for an OAuth callback on /callback.",
                 );
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-                return Ok(data);
+                continue;
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(100));
@@ -105,6 +98,23 @@ pub fn listen_for_callback(timeout: Duration) -> Result<CallbackData, LoopbackEr
 
 fn read_request_line(stream: &mut std::net::TcpStream) -> Option<String> {
     read_request_line_from(stream)
+}
+
+fn write_response(
+    stream: &mut std::net::TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &str,
+) -> std::io::Result<()> {
+    let resp = format!(
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        content_type,
+        body.len(),
+        body
+    );
+    stream.write_all(resp.as_bytes())?;
+    stream.flush()
 }
 
 fn read_request_line_from<R: Read>(reader: &mut R) -> Option<String> {
@@ -130,11 +140,51 @@ fn read_request_line_from<R: Read>(reader: &mut R) -> Option<String> {
     }
 }
 
+fn request_target_from_request_line(line: &str) -> Option<&str> {
+    let mut parts = line.split_whitespace();
+    let _method = parts.next()?;
+    parts.next()
+}
+
+fn callback_data_from_request_line(line: &str) -> Option<CallbackData> {
+    let target = request_target_from_request_line(line)?;
+    let (path, _) = target.split_once('?')?;
+    if path != "/callback" {
+        return None;
+    }
+
+    let params = parse_query_from_request_line(line);
+    let data = callback_data_from_params(&params);
+    if data.code.is_none() && data.error.is_none() {
+        return None;
+    }
+    Some(data)
+}
+
+fn callback_data_from_params(params: &[(String, String)]) -> CallbackData {
+    CallbackData {
+        code: params
+            .iter()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.clone()),
+        state: params
+            .iter()
+            .find(|(k, _)| k == "state")
+            .map(|(_, v)| v.clone()),
+        error: params
+            .iter()
+            .find(|(k, _)| k == "error")
+            .map(|(_, v)| v.clone()),
+        error_description: params
+            .iter()
+            .find(|(k, _)| k == "error_description")
+            .map(|(_, v)| v.clone()),
+    }
+}
+
 /// Parse `GET /callback?code=X&state=Y HTTP/1.1` → [("code","X"),("state","Y")].
 fn parse_query_from_request_line(line: &str) -> Vec<(String, String)> {
-    let mut parts = line.split_whitespace();
-    let _method = parts.next();
-    let target = match parts.next() {
+    let target = match request_target_from_request_line(line) {
         Some(t) => t,
         None => return Vec::new(),
     };
@@ -357,6 +407,36 @@ mod tests {
     fn parse_query_empty() {
         assert!(parse_query_from_request_line("GET / HTTP/1.1").is_empty());
         assert!(parse_query_from_request_line("").is_empty());
+    }
+
+    #[test]
+    fn callback_data_requires_callback_path_and_code_or_error() {
+        assert_eq!(
+            callback_data_from_request_line("GET /callback?code=abc&state=xyz HTTP/1.1"),
+            Some(CallbackData {
+                code: Some("abc".into()),
+                state: Some("xyz".into()),
+                error: None,
+                error_description: None,
+            })
+        );
+        assert!(callback_data_from_request_line("GET /favicon.ico HTTP/1.1").is_none());
+        assert!(callback_data_from_request_line("GET /callback?state=xyz HTTP/1.1").is_none());
+    }
+
+    #[test]
+    fn callback_data_accepts_error_callbacks() {
+        assert_eq!(
+            callback_data_from_request_line(
+                "GET /callback?error=access_denied&error_description=Nope HTTP/1.1",
+            ),
+            Some(CallbackData {
+                code: None,
+                state: None,
+                error: Some("access_denied".into()),
+                error_description: Some("Nope".into()),
+            })
+        );
     }
 
     #[test]

@@ -92,9 +92,7 @@ fn normalize_provider_name(provider: &str) -> Result<String, Box<dyn std::error:
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
     {
-        return Err(
-            "provider name must use only ASCII letters, digits, '-' or '_'".into(),
-        );
+        return Err("provider name must use only ASCII letters, digits, '-' or '_'".into());
     }
     Ok(name.to_lowercase())
 }
@@ -144,6 +142,10 @@ fn auth_file(base: &Path, site: &str) -> PathBuf {
     effective_auth_dir(base, site).join("auth.yaml")
 }
 
+fn site_auth_file(base: &Path, site: &str) -> PathBuf {
+    token_dir_with_base(base, site).join("auth.yaml")
+}
+
 fn app_file(base: &Path, site: &str) -> PathBuf {
     effective_auth_dir(base, site).join("app.yaml")
 }
@@ -160,6 +162,12 @@ pub fn load_auth(site: &str) -> Option<AuthFile> {
 
 pub fn save_auth(site: &str, auth: &AuthFile) -> Result<(), Box<dyn std::error::Error>> {
     save_auth_to(&home(), site, auth)
+}
+
+/// Save `auth.yaml` in the site's own directory and detach any provider
+/// pointer so static credentials never overwrite a shared provider token.
+pub fn save_site_auth_local(site: &str, auth: &AuthFile) -> Result<(), Box<dyn std::error::Error>> {
+    save_site_auth_local_to(&home(), site, auth)
 }
 
 pub fn load_app(site: &str) -> Option<AppConfig> {
@@ -227,7 +235,7 @@ pub fn save_token(site: &str, token: &str) -> Result<(), Box<dyn std::error::Err
         auth.method_id = Some("default".into());
     }
     auth.api_key = Some(token.to_string());
-    save_auth(site, &auth)
+    save_site_auth_local(site, &auth)
 }
 
 #[allow(dead_code)]
@@ -399,6 +407,16 @@ fn save_auth_to(
     atomic_write(&auth_file(base, site), yaml.as_bytes())
 }
 
+fn save_site_auth_local_to(
+    base: &Path,
+    site: &str,
+    auth: &AuthFile,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let yaml = serde_yaml::to_string(auth)?;
+    atomic_write(&site_auth_file(base, site), yaml.as_bytes())?;
+    clear_provider_pointer_to(base, site)
+}
+
 fn load_app_from(base: &Path, site: &str) -> Option<AppConfig> {
     let content = fs::read_to_string(app_file(base, site)).ok()?;
     serde_yaml::from_str(&content).ok()
@@ -417,7 +435,10 @@ fn save_provider_auth_to(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let provider = normalize_provider_name(provider)?;
     let yaml = serde_yaml::to_string(auth)?;
-    atomic_write(&providers_dir(base, &provider).join("auth.yaml"), yaml.as_bytes())
+    atomic_write(
+        &providers_dir(base, &provider).join("auth.yaml"),
+        yaml.as_bytes(),
+    )
 }
 
 fn load_provider_app_from(base: &Path, provider: &str) -> Option<AppConfig> {
@@ -438,7 +459,10 @@ fn save_provider_app_to(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let provider = normalize_provider_name(provider)?;
     let yaml = serde_yaml::to_string(app)?;
-    atomic_write(&providers_dir(base, &provider).join("app.yaml"), yaml.as_bytes())
+    atomic_write(
+        &providers_dir(base, &provider).join("app.yaml"),
+        yaml.as_bytes(),
+    )
 }
 
 fn save_provider_pointer_to(
@@ -447,13 +471,19 @@ fn save_provider_pointer_to(
     provider: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = normalize_provider_name(provider)?;
-    let body = serde_yaml::to_string(&ProviderPointer {
-        provider: name,
-    })?;
+    let body = serde_yaml::to_string(&ProviderPointer { provider: name })?;
     // Pointer always lives inside the site's own dir — it must NOT route
     // through effective_auth_dir, or we'd recurse into the provider dir
     // we're trying to point at.
     atomic_write(&provider_pointer_file(base, site), body.as_bytes())
+}
+
+fn clear_provider_pointer_to(base: &Path, site: &str) -> Result<(), Box<dyn std::error::Error>> {
+    match fs::remove_file(provider_pointer_file(base, site)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Box::new(e)),
+    }
 }
 
 /// Delete the site's auth.yaml. When the site is provider-backed, this
@@ -957,6 +987,50 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, "Bearer shared-at");
+    }
+
+    #[test]
+    fn site_local_auth_detaches_provider_pointer_without_clobbering_shared_auth() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        save_provider_pointer_to(base, "google-drive", "google").unwrap();
+        save_provider_pointer_to(base, "google-docs", "google").unwrap();
+
+        let mut shared = AuthFile::default();
+        shared.kind = Some(AuthKind::Oauth2);
+        shared.method_id = Some("oauth".into());
+        shared.access_token = Some("shared-at".into());
+        save_auth_to(base, "google-drive", &shared).unwrap();
+        assert_eq!(
+            load_auth_from(base, "google-docs")
+                .unwrap()
+                .access_token
+                .as_deref(),
+            Some("shared-at")
+        );
+
+        let mut local = AuthFile::default();
+        local.kind = Some(AuthKind::Static);
+        local.method_id = Some("pat".into());
+        local.api_key = Some("site-secret".into());
+        save_site_auth_local_to(base, "google-docs", &local).unwrap();
+
+        assert!(load_provider_pointer(base, "google-docs").is_none());
+        assert_eq!(
+            load_auth_from(base, "google-docs")
+                .unwrap()
+                .api_key
+                .as_deref(),
+            Some("site-secret")
+        );
+        assert_eq!(
+            load_auth_from(base, "google-drive")
+                .unwrap()
+                .access_token
+                .as_deref(),
+            Some("shared-at")
+        );
     }
 
     #[test]
