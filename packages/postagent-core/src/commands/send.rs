@@ -1,6 +1,7 @@
 use crate::token::{referenced_sites, resolve_template_variables};
 use reqwest::blocking::Client;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::time::Duration;
 
 fn contains_token_template(s: &str) -> bool {
@@ -8,6 +9,30 @@ fn contains_token_template(s: &str) -> bool {
     regex::Regex::new(r"\$POSTAGENT\.[A-Za-z0-9_-]+\.[A-Z_]+")
         .unwrap()
         .is_match(s)
+}
+
+fn validated_send_url(raw_url: &str) -> Result<reqwest::Url, String> {
+    let url =
+        reqwest::Url::parse(raw_url).map_err(|_| "Invalid URL after template resolution.".to_string())?;
+
+    let is_loopback_http = url.scheme() == "http"
+        && url.host_str().is_some_and(|host| {
+            let normalized_host = host.trim_start_matches('[').trim_end_matches(']');
+            normalized_host.eq_ignore_ascii_case("localhost")
+                || normalized_host
+                    .parse::<IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false)
+        });
+
+    if url.scheme() == "https" || is_loopback_http {
+        Ok(url)
+    } else {
+        Err(format!(
+            "Refusing to send $POSTAGENT credentials to non-HTTPS URL {}. Use https:// or an http://localhost/127.0.0.1/[::1] URL for local testing.",
+            raw_url
+        ))
+    }
 }
 
 pub fn run(
@@ -34,6 +59,13 @@ pub fn run(
 
     let url = match resolve_template_variables(raw_url) {
         Ok(u) => u,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+    let parsed_url = match validated_send_url(&url) {
+        Ok(url) => url,
         Err(e) => {
             eprintln!("{}", e);
             std::process::exit(1);
@@ -84,22 +116,16 @@ pub fn run(
         );
     }
 
-    if let Ok(api_key) = std::env::var("POSTAGENT_API_KEY") {
-        merged_headers.insert("x-api-key".to_string(), api_key);
-    } else if let Some(api_key) = super::config::get_value("apiKey") {
-        merged_headers.insert("x-api-key".to_string(), api_key);
-    }
-
     let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
 
     let mut request = match http_method.as_str() {
-        "GET" => client.get(&url),
-        "POST" => client.post(&url),
-        "PUT" => client.put(&url),
-        "PATCH" => client.patch(&url),
-        "DELETE" => client.delete(&url),
-        "HEAD" => client.head(&url),
-        _ => client.request(reqwest::Method::from_bytes(http_method.as_bytes())?, &url),
+        "GET" => client.get(parsed_url.clone()),
+        "POST" => client.post(parsed_url.clone()),
+        "PUT" => client.put(parsed_url.clone()),
+        "PATCH" => client.patch(parsed_url.clone()),
+        "DELETE" => client.delete(parsed_url.clone()),
+        "HEAD" => client.head(parsed_url.clone()),
+        _ => client.request(reqwest::Method::from_bytes(http_method.as_bytes())?, parsed_url.clone()),
     };
 
     for (key, value) in &merged_headers {
@@ -324,5 +350,35 @@ mod tests {
         assert!(contains_token_template("$POSTAGENT.FOO.API_KEY"));
         assert!(contains_token_template("$POSTAGENT.FOO.EXTRAS"));
         assert!(!contains_token_template("no templates here"));
+    }
+
+    #[test]
+    fn validated_send_url_allows_https() {
+        let url = validated_send_url("https://api.example.com/v1").unwrap();
+        assert_eq!(url.scheme(), "https");
+    }
+
+    #[test]
+    fn validated_send_url_allows_loopback_http() {
+        for raw_url in [
+            "http://localhost:3000/v1",
+            "http://127.0.0.1:3000/v1",
+            "http://[::1]:3000/v1",
+        ] {
+            let url = validated_send_url(raw_url).unwrap();
+            assert_eq!(url.scheme(), "http");
+        }
+    }
+
+    #[test]
+    fn validated_send_url_rejects_remote_http() {
+        let err = validated_send_url("http://api.example.com/v1").unwrap_err();
+        assert!(err.contains("non-HTTPS URL"));
+    }
+
+    #[test]
+    fn validated_send_url_rejects_invalid_urls() {
+        let err = validated_send_url("not a url").unwrap_err();
+        assert_eq!(err, "Invalid URL after template resolution.");
     }
 }
