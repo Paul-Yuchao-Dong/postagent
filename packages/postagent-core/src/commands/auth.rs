@@ -887,6 +887,32 @@ pub fn reset(site: &str) -> Result<(), Box<dyn std::error::Error>> {
 ///     point them at `setup_url` to read provider docs directly. This
 ///     matches the "paste-only fallback" philosophy elsewhere: never a
 ///     dead end, always give them a next step.
+fn saved_oauth_scope_state(
+    auth: Option<&AuthFile>,
+    method_id: &str,
+    separator: &str,
+) -> (bool, Option<Vec<String>>) {
+    let saved = auth
+        .filter(|a| a.effective_kind() == AuthKind::Oauth2 && a.effective_method_id() == method_id);
+    let granted = saved.and_then(|a| a.scope.as_deref()).map(|scope| {
+        if separator.is_empty() {
+            let trimmed = scope.trim();
+            if trimmed.is_empty() {
+                Vec::new()
+            } else {
+                vec![trimmed.to_string()]
+            }
+        } else {
+            scope
+                .split(separator)
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        }
+    });
+    (saved.is_some(), granted)
+}
+
 pub fn scopes(site: &str) -> Result<(), Box<dyn std::error::Error>> {
     let site_lower = site.to_lowercase();
     let methods =
@@ -908,10 +934,9 @@ pub fn scopes(site: &str) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Load local auth state so we can mark what's currently GRANTED (from
-    // the token endpoint's echoed `scope` field) rather than just what the
-    // descriptor's `default` would request. Users who re-auth with a wider
-    // scope set need to see their new grants reflected here.
+    // Load local auth state so we can distinguish:
+    //   1. whether this method is authenticated at all, and
+    //   2. whether the provider echoed back a concrete granted-scope list.
     let local_auth = token::load_auth(&site_lower);
 
     for (i, method) in oauth_methods.iter().enumerate() {
@@ -920,34 +945,26 @@ pub fn scopes(site: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("=== {} / {} (oauth2)", site_lower, method.id);
 
-        // Decide whether to mark "GRANTED" (actual, from saved auth.yaml)
-        // or "DEFAULT" (hypothetical, from descriptor). Granted wins only
-        // when the saved credentials are for THIS method and were obtained
-        // via the OAuth flow (i.e. the token endpoint returned a scope
-        // string). Anything else falls back to default — `--token` saves
-        // and static methods never carry a scope field.
-        let granted: Option<Vec<String>> = local_auth
-            .as_ref()
-            .filter(|a| {
-                a.effective_kind() == AuthKind::Oauth2 && a.effective_method_id() == method.id
-            })
-            .and_then(|a| a.scope.clone())
-            .map(|s| {
-                let sep = method.scopes.separator.as_str();
-                s.split(sep)
-                    .map(|x| x.trim().to_string())
-                    .filter(|x| !x.is_empty())
-                    .collect()
-            });
+        // Saved OAuth auth answers "is this method authenticated?".
+        // The optional `scope` field only answers whether the provider
+        // echoed back a granted-scope list.
+        let (is_authenticated, granted) = saved_oauth_scope_state(
+            local_auth.as_ref(),
+            &method.id,
+            method.scopes.separator.as_str(),
+        );
 
         // One-line status header so users know which column they're looking
         // at without reading the legend at the bottom.
-        match &granted {
-            Some(g) => println!(
+        match (is_authenticated, &granted) {
+            (_, Some(g)) => println!(
                 "  Status: authenticated — {} scope(s) currently granted",
                 g.len()
             ),
-            None => println!("  Status: not authenticated (showing default scope request)"),
+            (true, None) => println!(
+                "  Status: authenticated — provider did not report granted scopes (showing default scope request)"
+            ),
+            (false, None) => println!("  Status: not authenticated (showing default scope request)"),
         }
 
         match method.scopes.catalog.as_ref() {
@@ -1042,11 +1059,12 @@ pub fn scopes(site: &str) -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 println!();
-                match &granted {
-                    Some(_) => println!(
-                        "  ✓ = currently granted to your saved credentials"
+                match (is_authenticated, &granted) {
+                    (_, Some(_)) => println!("  ✓ = currently granted to your saved credentials"),
+                    (true, None) => println!(
+                        "  default = default scope view only; provider did not report granted scopes"
                     ),
-                    None => println!(
+                    (false, None) => println!(
                         "  default = included in the default authorize request (override with --scope)"
                     ),
                 }
@@ -1063,8 +1081,8 @@ pub fn scopes(site: &str) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(url) = method.setup_url.as_deref() {
                     println!("  Refer to provider docs: {}", url);
                 }
-                match &granted {
-                    Some(g) => println!(
+                match (is_authenticated, &granted) {
+                    (_, Some(g)) => println!(
                         "  Currently granted: {}",
                         if g.is_empty() {
                             "(none)".to_string()
@@ -1072,7 +1090,18 @@ pub fn scopes(site: &str) -> Result<(), Box<dyn std::error::Error>> {
                             g.join(method.scopes.separator.as_str())
                         }
                     ),
-                    None => println!(
+                    (true, None) => {
+                        println!("  Currently granted: unknown (provider did not report scope)");
+                        println!(
+                            "  Defaults requested: {}",
+                            if method.scopes.default.is_empty() {
+                                "(none)".to_string()
+                            } else {
+                                method.scopes.default.join(method.scopes.separator.as_str())
+                            }
+                        );
+                    }
+                    (false, None) => println!(
                         "  Defaults requested: {}",
                         if method.scopes.default.is_empty() {
                             "(none)".to_string()
@@ -1439,5 +1468,34 @@ mod tests {
             normalize_required_authorize_param("tenant", "  acme  ").unwrap(),
             "acme"
         );
+    }
+
+    #[test]
+    fn saved_oauth_scope_state_treats_missing_scope_as_authenticated() {
+        let auth = AuthFile {
+            kind: Some(AuthKind::Oauth2),
+            method_id: Some("oauth".into()),
+            access_token: Some("token".into()),
+            ..Default::default()
+        };
+
+        let (is_authenticated, granted) = saved_oauth_scope_state(Some(&auth), "oauth", " ");
+        assert!(is_authenticated);
+        assert_eq!(granted, None);
+    }
+
+    #[test]
+    fn saved_oauth_scope_state_ignores_other_methods() {
+        let auth = AuthFile {
+            kind: Some(AuthKind::Oauth2),
+            method_id: Some("other".into()),
+            access_token: Some("token".into()),
+            scope: Some("repo read:user".into()),
+            ..Default::default()
+        };
+
+        let (is_authenticated, granted) = saved_oauth_scope_state(Some(&auth), "oauth", " ");
+        assert!(!is_authenticated);
+        assert_eq!(granted, None);
     }
 }
