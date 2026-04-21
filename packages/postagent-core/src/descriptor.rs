@@ -72,6 +72,14 @@ pub struct OAuth2AuthMethod {
     pub setup_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_instructions: Option<String>,
+    /// Opt-in namespace for cross-site credential/token sharing. When set,
+    /// the CLI writes app.yaml + auth.yaml under
+    /// `~/.postagent/profiles/<p>/providers/<provider>/` instead of the
+    /// per-site directory; every sibling site declaring the same provider
+    /// reuses the same BYO credentials and the same access/refresh token.
+    /// See docs/design/oauth.md §(provider sharing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     pub grants: Vec<String>,
     pub client: ClientSpec,
     pub authorize: AuthorizeSpec,

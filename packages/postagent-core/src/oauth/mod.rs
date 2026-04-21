@@ -173,6 +173,7 @@ mod tests {
             label: "l".into(),
             setup_url: None,
             setup_instructions: None,
+            provider: None,
             grants: vec!["authorization_code".into()],
             client: ClientSpec { client_type: "public".into() },
             authorize: AuthorizeSpec {

@@ -531,6 +531,22 @@ fn handle_oauth2(
     method: &descriptor::OAuth2AuthMethod,
     args: &LoginArgs<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Link this site into its provider namespace BEFORE any load_app /
+    // save_app / save_auth call, so every subsequent read/write routes to
+    // the shared `providers/<provider>/` dir. Siblings that already
+    // authorized under the same provider can now reuse those creds + the
+    // existing access/refresh token (Google's `include_granted_scopes=true`
+    // lets Google accumulate scopes across re-authorizations).
+    if let Some(provider) = method.provider.as_deref() {
+        token::save_provider_pointer(site, provider)?;
+        if token::load_app(site).is_some() {
+            eprintln!(
+                "Reusing shared credentials for provider \"{}\" — client_id/secret will not be prompted.",
+                provider
+            );
+        }
+    }
+
     // Render setup_instructions, if any. `{{redirect_uri}}` is substituted.
     if let Some(instructions) = method.setup_instructions.as_deref() {
         eprintln!();
@@ -826,15 +842,6 @@ pub fn scopes(site: &str) -> Result<(), Box<dyn std::error::Error>> {
                     .collect()
             });
 
-        let (marker_set, marker_label): (std::collections::BTreeSet<String>, &str) =
-            match &granted {
-                Some(g) => (g.iter().cloned().collect(), "GRANTED"),
-                None => (
-                    method.scopes.default.iter().cloned().collect(),
-                    "DEFAULT",
-                ),
-            };
-
         // One-line status header so users know which column they're looking
         // at without reading the legend at the bottom.
         match &granted {
@@ -847,33 +854,64 @@ pub fn scopes(site: &str) -> Result<(), Box<dyn std::error::Error>> {
 
         match method.scopes.catalog.as_ref() {
             Some(catalog) if !catalog.is_empty() => {
-                let name_w = catalog
-                    .iter()
-                    .map(|e| e.name.len())
-                    .max()
-                    .unwrap_or(0)
-                    .max(marker_label.len());
-                println!(
-                    "  {:<3} {:<nw$}  {}",
-                    marker_label.chars().next().map(|_| "").unwrap_or(""),
-                    "SCOPE",
-                    "DESCRIPTION",
-                    nw = name_w
-                );
-                for entry in catalog {
-                    let marker = if marker_set.contains(&entry.name) {
-                        "✓"
-                    } else {
-                        " "
-                    };
-                    let desc = entry.description.as_deref().unwrap_or("—");
-                    println!(
-                        "  {:<3} {:<nw$}  {}",
-                        marker,
-                        entry.name,
-                        desc,
-                        nw = name_w
-                    );
+                let name_w = catalog.iter().map(|e| e.name.len()).max().unwrap_or(0);
+
+                // Authenticated and unauthenticated render as two separate
+                // tables because the semantics of the marker column differ.
+                // Keeping them split avoids the historical bug where a ✓
+                // next to an unauth'd default scope read as "granted".
+                match &granted {
+                    Some(g) => {
+                        // ✓ = actually granted by the token endpoint.
+                        let granted_set: std::collections::BTreeSet<&str> =
+                            g.iter().map(|s| s.as_str()).collect();
+                        println!(
+                            "  {:<3} {:<nw$}  {}",
+                            "", "SCOPE", "DESCRIPTION", nw = name_w
+                        );
+                        for entry in catalog {
+                            let marker =
+                                if granted_set.contains(entry.name.as_str()) { "✓" } else { " " };
+                            let desc = entry.description.as_deref().unwrap_or("—");
+                            println!(
+                                "  {:<3} {:<nw$}  {}",
+                                marker, entry.name, desc, nw = name_w
+                            );
+                        }
+                    }
+                    None => {
+                        // No ✓ column — nothing is granted yet. Tag rows
+                        // that are part of the default authorize request
+                        // with a trailing literal "default" so the column
+                        // can't be misread as a checkbox.
+                        let default_set: std::collections::BTreeSet<&str> = method
+                            .scopes
+                            .default
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect();
+                        let desc_w = catalog
+                            .iter()
+                            .map(|e| e.description.as_deref().unwrap_or("—").len())
+                            .max()
+                            .unwrap_or(0);
+                        println!(
+                            "  {:<nw$}  {:<dw$}  {}",
+                            "SCOPE", "DESCRIPTION", "", nw = name_w, dw = desc_w
+                        );
+                        for entry in catalog {
+                            let desc = entry.description.as_deref().unwrap_or("—");
+                            let tag = if default_set.contains(entry.name.as_str()) {
+                                "default"
+                            } else {
+                                ""
+                            };
+                            println!(
+                                "  {:<nw$}  {:<dw$}  {}",
+                                entry.name, desc, tag, nw = name_w, dw = desc_w
+                            );
+                        }
+                    }
                 }
 
                 // If the provider returned scopes we don't have in the
@@ -899,7 +937,9 @@ pub fn scopes(site: &str) -> Result<(), Box<dyn std::error::Error>> {
                     Some(_) => println!(
                         "  ✓ = currently granted to your saved credentials"
                     ),
-                    None => println!("  ✓ = included in default scope request"),
+                    None => println!(
+                        "  default = included in the default authorize request (override with --scope)"
+                    ),
                 }
                 println!("  Escalate with: postagent auth {} --scope <name> [...]", site_lower);
                 println!(

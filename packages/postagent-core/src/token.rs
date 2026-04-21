@@ -72,6 +72,17 @@ pub struct AppConfig {
     pub descriptor_hash: String,
 }
 
+/// Pointer file written into `<site>/provider.yaml` when the site's auth
+/// method opts into a shared provider namespace (Google/Microsoft/...).
+/// Its existence routes every subsequent `load_auth` / `save_auth` /
+/// `load_app` / `save_app` call for that site to the provider directory
+/// instead of the per-site one, so sibling sites naturally reuse the same
+/// BYO credentials and the same access/refresh token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProviderPointer {
+    provider: String,
+}
+
 fn token_dir_with_base(base: &Path, site: &str) -> PathBuf {
     base.join(".postagent")
         .join("profiles")
@@ -79,12 +90,47 @@ fn token_dir_with_base(base: &Path, site: &str) -> PathBuf {
         .join(site.to_lowercase())
 }
 
+/// Shared storage directory for every site that declares this provider.
+/// Nested under a reserved `providers/` segment so it never collides with a
+/// site slug (site slugs are hyphenated words; the segment name is fixed).
+fn providers_dir(base: &Path, provider: &str) -> PathBuf {
+    base.join(".postagent")
+        .join("profiles")
+        .join(DEFAULT_PROFILE)
+        .join("providers")
+        .join(provider.to_lowercase())
+}
+
+fn provider_pointer_file(base: &Path, site: &str) -> PathBuf {
+    token_dir_with_base(base, site).join("provider.yaml")
+}
+
+/// Returns the provider name this site is linked to, or `None` when the
+/// site keeps its credentials and tokens in its own directory.
+fn load_provider_pointer(base: &Path, site: &str) -> Option<String> {
+    let path = provider_pointer_file(base, site);
+    let content = fs::read_to_string(&path).ok()?;
+    let p: ProviderPointer = serde_yaml::from_str(&content).ok()?;
+    let name = p.provider.trim().to_string();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Storage directory that actually holds this site's `auth.yaml` / `app.yaml`.
+/// If a provider pointer exists, all reads/writes route to the shared
+/// provider directory; otherwise they stay in the per-site directory.
+fn effective_auth_dir(base: &Path, site: &str) -> PathBuf {
+    match load_provider_pointer(base, site) {
+        Some(provider) => providers_dir(base, &provider),
+        None => token_dir_with_base(base, site),
+    }
+}
+
 fn auth_file(base: &Path, site: &str) -> PathBuf {
-    token_dir_with_base(base, site).join("auth.yaml")
+    effective_auth_dir(base, site).join("auth.yaml")
 }
 
 fn app_file(base: &Path, site: &str) -> PathBuf {
-    token_dir_with_base(base, site).join("app.yaml")
+    effective_auth_dir(base, site).join("app.yaml")
 }
 
 fn home() -> PathBuf {
@@ -107,6 +153,17 @@ pub fn load_app(site: &str) -> Option<AppConfig> {
 
 pub fn save_app(site: &str, app: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
     save_app_to(&home(), site, app)
+}
+
+/// Link this site to a shared provider namespace. After this call,
+/// `load_auth` / `save_auth` / `load_app` / `save_app` for `site` route to
+/// `providers/<provider>/` instead of the per-site directory. Idempotent:
+/// writing the same pointer again is a no-op semantically.
+///
+/// Callers MUST invoke this before the first `save_app` / `save_auth` of a
+/// provider-backed site so those writes land in the shared directory.
+pub fn save_provider_pointer(site: &str, provider: &str) -> Result<(), Box<dyn std::error::Error>> {
+    save_provider_pointer_to(&home(), site, provider)
 }
 
 pub fn logout(site: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -285,8 +342,9 @@ fn save_auth_to(
     site: &str,
     auth: &AuthFile,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let dir = token_dir_with_base(base, site);
-    fs::create_dir_all(&dir)?;
+    // `auth_file` resolves to the provider dir when a pointer exists, so a
+    // single `atomic_write` (which already creates parents) covers both
+    // per-site and provider-backed layouts.
     let yaml = serde_yaml::to_string(auth)?;
     atomic_write(&auth_file(base, site), yaml.as_bytes())
 }
@@ -301,12 +359,32 @@ fn save_app_to(
     site: &str,
     app: &AppConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let dir = token_dir_with_base(base, site);
-    fs::create_dir_all(&dir)?;
     let yaml = serde_yaml::to_string(app)?;
     atomic_write(&app_file(base, site), yaml.as_bytes())
 }
 
+fn save_provider_pointer_to(
+    base: &Path,
+    site: &str,
+    provider: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let name = provider.trim();
+    if name.is_empty() {
+        return Err("provider name cannot be empty".into());
+    }
+    let body = serde_yaml::to_string(&ProviderPointer {
+        provider: name.to_string(),
+    })?;
+    // Pointer always lives inside the site's own dir — it must NOT route
+    // through effective_auth_dir, or we'd recurse into the provider dir
+    // we're trying to point at.
+    atomic_write(&provider_pointer_file(base, site), body.as_bytes())
+}
+
+/// Delete the site's auth.yaml. When the site is provider-backed, this
+/// removes the shared `providers/<provider>/auth.yaml` and therefore logs
+/// out every sibling site that shares the same provider. Callers that
+/// surface logout in the UI should warn the user when the pointer exists.
 fn logout_in(base: &Path, site: &str) -> Result<(), Box<dyn std::error::Error>> {
     let f = auth_file(base, site);
     if f.exists() {
@@ -315,6 +393,11 @@ fn logout_in(base: &Path, site: &str) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
+/// Delete auth.yaml + app.yaml. Provider-backed sites clear the shared
+/// credentials and token; the pointer file is intentionally left in place
+/// so a subsequent re-auth repopulates the shared directory under the same
+/// provider binding. (Detaching a site from its provider is a separate
+/// operation not yet exposed.)
 fn reset_in(base: &Path, site: &str) -> Result<(), Box<dyn std::error::Error>> {
     for f in [auth_file(base, site), app_file(base, site)] {
         if f.exists() {
@@ -631,6 +714,97 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn provider_pointer_routes_auth_and_app_to_shared_dir() {
+        // Site A saves its creds/tokens; site B then opts into the same
+        // provider BEFORE writing anything. B's loads must resolve against
+        // the shared provider dir and return A's values unchanged.
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        save_provider_pointer_to(base, "google-drive", "google").unwrap();
+
+        let app = AppConfig {
+            method_id: "oauth".into(),
+            client_id: "shared-cid".into(),
+            client_secret: Some("shared-sec".into()),
+            descriptor_hash: "hhhhhhhhhhhhhhhh".into(),
+        };
+        save_app_to(base, "google-drive", &app).unwrap();
+
+        let mut auth = AuthFile::default();
+        auth.kind = Some(AuthKind::Oauth2);
+        auth.method_id = Some("oauth".into());
+        auth.access_token = Some("shared-at".into());
+        auth.refresh_token = Some("shared-rt".into());
+        save_auth_to(base, "google-drive", &auth).unwrap();
+
+        // Second site under the same provider: reads without ever having
+        // pasted creds itself.
+        save_provider_pointer_to(base, "google-docs", "google").unwrap();
+        let app_b = load_app_from(base, "google-docs").unwrap();
+        assert_eq!(app_b.client_id, "shared-cid");
+        let auth_b = load_auth_from(base, "google-docs").unwrap();
+        assert_eq!(auth_b.access_token.as_deref(), Some("shared-at"));
+
+        // Sanity: the files literally live in providers/google, not in
+        // either site's own dir.
+        let shared_auth = providers_dir(base, "google").join("auth.yaml");
+        let shared_app = providers_dir(base, "google").join("app.yaml");
+        assert!(shared_auth.exists());
+        assert!(shared_app.exists());
+        assert!(!token_dir_with_base(base, "google-drive").join("auth.yaml").exists());
+        assert!(!token_dir_with_base(base, "google-docs").join("auth.yaml").exists());
+    }
+
+    #[test]
+    fn provider_pointer_does_not_leak_into_non_provider_sites() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        save_provider_pointer_to(base, "google-drive", "google").unwrap();
+        let mut auth = AuthFile::default();
+        auth.kind = Some(AuthKind::Oauth2);
+        auth.access_token = Some("google-at".into());
+        save_auth_to(base, "google-drive", &auth).unwrap();
+
+        assert!(load_auth_from(base, "random-site").is_none());
+    }
+
+    #[test]
+    fn provider_logout_affects_shared_dir() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        save_provider_pointer_to(base, "google-drive", "google").unwrap();
+        save_provider_pointer_to(base, "google-docs", "google").unwrap();
+        let mut auth = AuthFile::default();
+        auth.access_token = Some("at".into());
+        save_auth_to(base, "google-drive", &auth).unwrap();
+        assert!(load_auth_from(base, "google-docs").is_some());
+
+        logout_in(base, "google-drive").unwrap();
+        assert!(load_auth_from(base, "google-drive").is_none());
+        assert!(load_auth_from(base, "google-docs").is_none());
+    }
+
+    #[test]
+    fn template_resolver_redirects_through_provider_pointer() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        save_provider_pointer_to(base, "google-docs", "google").unwrap();
+        let mut auth = AuthFile::default();
+        auth.kind = Some(AuthKind::Oauth2);
+        auth.access_token = Some("shared-at".into());
+        save_auth_to(base, "google-docs", &auth).unwrap();
+
+        let out =
+            resolve_template_variables_with_base(base, "Bearer $POSTAGENT.GOOGLE-DOCS.ACCESS_TOKEN")
+                .unwrap();
+        assert_eq!(out, "Bearer shared-at");
     }
 
     #[test]
