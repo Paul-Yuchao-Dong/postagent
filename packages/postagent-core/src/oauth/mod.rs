@@ -126,10 +126,13 @@ fn build_authorize_url(
 
     if let Some(extra) = &method.authorize.extra_params {
         for (k, raw_v) in extra {
-            // `response_type` might already be present; skip dupes in favor of
-            // what the descriptor author set.
+            if is_reserved_authorize_param(k) {
+                return Err(format!(
+                    "authorize.extra_params cannot override reserved OAuth parameter `{}`",
+                    k
+                ));
+            }
             let v = apply_placeholders(raw_v, placeholder_values);
-            pairs.retain(|(existing_k, _)| existing_k != k);
             pairs.push((k.clone(), v));
         }
     }
@@ -144,6 +147,19 @@ fn build_authorize_url(
             .join("&"),
     );
     Ok(url)
+}
+
+fn is_reserved_authorize_param(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "response_type"
+            | "client_id"
+            | "redirect_uri"
+            | "state"
+            | "code_challenge"
+            | "code_challenge_method"
+            | "scope"
+    )
 }
 
 /// Substitutes `{{name}}` placeholders with values from `values`. Single-brace
@@ -260,6 +276,17 @@ mod tests {
         let url = build_authorize_url(&m, "cid", "st", "chal", "", &ph).unwrap();
         assert!(url.contains("owner=user"));
         assert!(url.contains("tenant=acme"));
+    }
+
+    #[test]
+    fn reserved_authorize_params_cannot_be_overridden() {
+        let mut extra = BTreeMap::new();
+        extra.insert("state".into(), "bad".into());
+
+        let method = make_method(Some(extra));
+        let err =
+            build_authorize_url(&method, "cid", "st", "chal", "", &BTreeMap::new()).unwrap_err();
+        assert!(err.contains("reserved OAuth parameter `state`"));
     }
 
     #[test]

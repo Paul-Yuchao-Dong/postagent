@@ -124,7 +124,6 @@ fn select_method_numbered<'a>(
 fn select_method_interactive(
     methods: &[AuthMethod],
 ) -> Result<Option<usize>, Box<dyn std::error::Error>> {
-    use std::io::Read;
     use std::os::unix::io::AsRawFd;
 
     let stdin = io::stdin();
@@ -158,8 +157,10 @@ fn select_method_interactive(
     unsafe {
         let mut t = original;
         t.c_lflag &= !(libc::ECHO | libc::ICANON);
-        t.c_cc[libc::VMIN] = 1;
-        t.c_cc[libc::VTIME] = 0;
+        // Allow a short timeout so split escape sequences like ESC + [ + A/B
+        // can be buffered before a lone ESC is interpreted as cancel.
+        t.c_cc[libc::VMIN] = 0;
+        t.c_cc[libc::VTIME] = 1;
         libc::tcsetattr(fd, libc::TCSANOW, &t);
     }
 
@@ -171,15 +172,16 @@ fn select_method_interactive(
     render_menu(methods, cursor);
 
     let mut buf = [0u8; 8];
+    let mut pending = Vec::new();
     let result: Option<usize> = loop {
-        let nread = match stdin.lock().read(&mut buf) {
-            Ok(n) if n > 0 => n,
-            _ => break None, // EOF on stdin -> treat as cancel
+        let chunk = match read_key_sequence(&mut stdin.lock(), &mut buf, &mut pending) {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => continue,
+            Err(_) => break None,
         };
-        let chunk = &buf[..nread];
 
         // Match in priority: multi-byte escape seqs first, then single bytes.
-        let action = classify_key(chunk);
+        let action = classify_key(&chunk);
 
         match action {
             KeyAction::Up => {
@@ -254,6 +256,33 @@ fn classify_key(chunk: &[u8]) -> KeyAction {
     KeyAction::Unknown
 }
 
+#[cfg(unix)]
+fn needs_more_key_bytes(chunk: &[u8]) -> bool {
+    matches!(chunk, [0x1b] | [0x1b, b'['])
+}
+
+#[cfg(unix)]
+fn read_key_sequence<R: std::io::Read>(
+    reader: &mut R,
+    buf: &mut [u8],
+    pending: &mut Vec<u8>,
+) -> std::io::Result<Option<Vec<u8>>> {
+    loop {
+        let nread = reader.read(buf)?;
+        if nread == 0 {
+            if pending.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(std::mem::take(pending)));
+        }
+
+        pending.extend_from_slice(&buf[..nread]);
+        if pending.len() >= 3 || !needs_more_key_bytes(pending) {
+            return Ok(Some(std::mem::take(pending)));
+        }
+    }
+}
+
 /// Emit one line per method. Cursor at `idx` gets a `> ` prefix; the rest
 /// get two spaces so the label columns stay aligned.
 #[cfg(unix)]
@@ -307,7 +336,6 @@ fn select_scopes_interactive(
     catalog: &[descriptor::ScopeCatalogEntry],
     defaults: &[String],
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
-    use std::io::Read;
     use std::os::unix::io::AsRawFd;
 
     let stdin = io::stdin();
@@ -337,8 +365,8 @@ fn select_scopes_interactive(
     unsafe {
         let mut t = original;
         t.c_lflag &= !(libc::ECHO | libc::ICANON);
-        t.c_cc[libc::VMIN] = 1;
-        t.c_cc[libc::VTIME] = 0;
+        t.c_cc[libc::VMIN] = 0;
+        t.c_cc[libc::VTIME] = 1;
         libc::tcsetattr(fd, libc::TCSANOW, &t);
     }
 
@@ -358,12 +386,13 @@ fn select_scopes_interactive(
     render_scope_menu(catalog, &selected, cursor);
 
     let mut buf = [0u8; 8];
+    let mut pending = Vec::new();
     let confirmed = loop {
-        let nread = match stdin.lock().read(&mut buf) {
-            Ok(n) if n > 0 => n,
-            _ => break false, // EOF -> treat as cancel
+        let chunk = match read_key_sequence(&mut stdin.lock(), &mut buf, &mut pending) {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => continue,
+            Err(_) => break false,
         };
-        let chunk = &buf[..nread];
 
         let mut moved = false;
         if chunk.len() >= 3 && chunk[0] == 0x1b && chunk[1] == b'[' {
@@ -1248,6 +1277,46 @@ mod tests {
         assert!(matches!(classify_key(b""), KeyAction::Unknown));
         assert!(matches!(classify_key(b"x"), KeyAction::Unknown));
         assert!(matches!(classify_key(b"\x1b[Z"), KeyAction::Unknown)); // Shift+Tab
+    }
+
+    #[test]
+    fn needs_more_key_bytes_tracks_split_escape_sequences() {
+        assert!(needs_more_key_bytes(b"\x1b"));
+        assert!(needs_more_key_bytes(b"\x1b["));
+        assert!(!needs_more_key_bytes(b"\x1b[A"));
+        assert!(!needs_more_key_bytes(b"k"));
+    }
+
+    #[test]
+    fn read_key_sequence_buffers_split_arrow_keys() {
+        struct ChunkedReader {
+            chunks: Vec<Vec<u8>>,
+            next: usize,
+        }
+
+        impl std::io::Read for ChunkedReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.next >= self.chunks.len() {
+                    return Ok(0);
+                }
+                let chunk = &self.chunks[self.next];
+                self.next += 1;
+                buf[..chunk.len()].copy_from_slice(chunk);
+                Ok(chunk.len())
+            }
+        }
+
+        let mut reader = ChunkedReader {
+            chunks: vec![vec![0x1b], vec![b'['], vec![b'A']],
+            next: 0,
+        };
+        let mut buf = [0u8; 8];
+        let mut pending = Vec::new();
+        let seq = read_key_sequence(&mut reader, &mut buf, &mut pending)
+            .unwrap()
+            .unwrap();
+        assert_eq!(seq, b"\x1b[A");
+        assert!(matches!(classify_key(&seq), KeyAction::Up));
     }
 
     #[test]
