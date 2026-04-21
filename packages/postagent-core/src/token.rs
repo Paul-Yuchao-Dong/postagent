@@ -164,6 +164,10 @@ fn site_auth_file(base: &Path, site: &str) -> PathBuf {
     token_dir_with_base(base, site).join("auth.yaml")
 }
 
+fn site_app_file(base: &Path, site: &str) -> PathBuf {
+    token_dir_with_base(base, site).join("app.yaml")
+}
+
 fn app_file(base: &Path, site: &str) -> PathBuf {
     effective_auth_dir(base, site).join("app.yaml")
 }
@@ -507,9 +511,13 @@ fn clear_provider_pointer_to(base: &Path, site: &str) -> Result<(), Box<dyn std:
 /// out every sibling site that shares the same provider. Callers that
 /// surface logout in the UI should warn the user when the pointer exists.
 fn logout_in(base: &Path, site: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let f = auth_file(base, site);
-    if f.exists() {
-        fs::remove_file(&f)?;
+    let auth = auth_file(base, site);
+    if auth.exists() {
+        fs::remove_file(&auth)?;
+    }
+    let local_auth = site_auth_file(base, site);
+    if local_auth != auth && local_auth.exists() {
+        fs::remove_file(&local_auth)?;
     }
     Ok(())
 }
@@ -520,7 +528,12 @@ fn logout_in(base: &Path, site: &str) -> Result<(), Box<dyn std::error::Error>> 
 /// provider binding. (Detaching a site from its provider is a separate
 /// operation not yet exposed.)
 fn reset_in(base: &Path, site: &str) -> Result<(), Box<dyn std::error::Error>> {
-    for f in [auth_file(base, site), app_file(base, site)] {
+    let auth = auth_file(base, site);
+    let app = app_file(base, site);
+    let local_auth = site_auth_file(base, site);
+    let local_app = site_app_file(base, site);
+
+    for f in [auth, app, local_auth, local_app] {
         if f.exists() {
             fs::remove_file(&f)?;
         }
@@ -1024,6 +1037,74 @@ mod tests {
         logout_in(base, "google-drive").unwrap();
         assert!(load_auth_from(base, "google-drive").is_none());
         assert!(load_auth_from(base, "google-docs").is_none());
+    }
+
+    #[test]
+    fn provider_logout_clears_stale_site_local_auth() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        let mut local = AuthFile::default();
+        local.kind = Some(AuthKind::Static);
+        local.api_key = Some("stale-local".into());
+        save_auth_to(base, "google-drive", &local).unwrap();
+
+        save_provider_pointer_to(base, "google-drive", "google").unwrap();
+
+        let mut shared = AuthFile::default();
+        shared.kind = Some(AuthKind::Oauth2);
+        shared.access_token = Some("shared-at".into());
+        save_auth_to(base, "google-drive", &shared).unwrap();
+
+        logout_in(base, "google-drive").unwrap();
+        assert!(load_provider_auth_from(base, "google").is_none());
+        assert!(load_auth_from(base, "google-drive").is_none());
+    }
+
+    #[test]
+    fn provider_reset_clears_stale_site_local_state() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        let mut local_auth = AuthFile::default();
+        local_auth.kind = Some(AuthKind::Static);
+        local_auth.api_key = Some("stale-local".into());
+        save_auth_to(base, "google-drive", &local_auth).unwrap();
+        save_app_to(
+            base,
+            "google-drive",
+            &AppConfig {
+                method_id: "legacy".into(),
+                client_id: "site-cid".into(),
+                client_secret: None,
+                descriptor_hash: "hhhhhhhhhhhhhhhh".into(),
+            },
+        )
+        .unwrap();
+
+        save_provider_pointer_to(base, "google-drive", "google").unwrap();
+
+        let mut shared = AuthFile::default();
+        shared.kind = Some(AuthKind::Oauth2);
+        shared.access_token = Some("shared-at".into());
+        save_auth_to(base, "google-drive", &shared).unwrap();
+        save_app_to(
+            base,
+            "google-drive",
+            &AppConfig {
+                method_id: "oauth".into(),
+                client_id: "shared-cid".into(),
+                client_secret: Some("shared-sec".into()),
+                descriptor_hash: "hhhhhhhhhhhhhhhh".into(),
+            },
+        )
+        .unwrap();
+
+        reset_in(base, "google-drive").unwrap();
+        assert!(load_provider_auth_from(base, "google").is_none());
+        assert!(load_provider_app_from(base, "google").is_none());
+        assert!(load_auth_from(base, "google-drive").is_none());
+        assert!(load_app_from(base, "google-drive").is_none());
     }
 
     #[test]

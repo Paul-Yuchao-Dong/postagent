@@ -582,9 +582,16 @@ fn save_static(
 }
 
 fn validate_static_secret(secret: &str) -> Result<&str, Box<dyn std::error::Error>> {
-    let trimmed = secret.trim();
+    validate_nonblank_value(secret, "Error: credentials cannot be empty.")
+}
+
+fn validate_nonblank_value<'a>(
+    value: &'a str,
+    error: &str,
+) -> Result<&'a str, Box<dyn std::error::Error>> {
+    let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err("Error: credentials cannot be empty.".into());
+        return Err(error.into());
     }
     Ok(trimmed)
 }
@@ -627,9 +634,7 @@ fn handle_oauth2(
             None => read_secret("Client ID: ")?,
         },
     };
-    if client_id.is_empty() {
-        return Err("client_id cannot be empty".into());
-    }
+    let client_id = validate_nonblank_value(&client_id, "client_id cannot be empty")?.to_string();
 
     let client_secret: Option<String> = if method.client.client_type == "confidential" {
         let raw = match args.client_secret {
@@ -643,10 +648,13 @@ fn handle_oauth2(
                 None => read_secret("Client Secret: ")?,
             },
         };
-        if raw.is_empty() {
-            return Err("client_secret cannot be empty for confidential client".into());
-        }
-        Some(raw)
+        Some(
+            validate_nonblank_value(
+                &raw,
+                "client_secret cannot be empty for confidential client",
+            )?
+            .to_string(),
+        )
     } else {
         args.client_secret.map(|s| s.to_string())
     };
@@ -1338,6 +1346,22 @@ mod tests {
     #[test]
     fn validate_static_secret_trims_surrounding_whitespace() {
         assert_eq!(validate_static_secret("  secret  ").unwrap(), "secret");
+    }
+
+    #[test]
+    fn validate_nonblank_value_rejects_whitespace_only_values() {
+        let err = validate_nonblank_value("   ", "client_id cannot be empty")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "client_id cannot be empty");
+    }
+
+    #[test]
+    fn validate_nonblank_value_trims_surrounding_whitespace() {
+        assert_eq!(
+            validate_nonblank_value("  client-id  ", "unused").unwrap(),
+            "client-id"
+        );
     }
 
     #[test]
