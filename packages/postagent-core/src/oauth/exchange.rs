@@ -1,9 +1,10 @@
-use crate::descriptor::OAuth2AuthMethod;
+use crate::descriptor::{OAuth2AuthMethod, ResponseMap};
 use base64::engine::general_purpose::STANDARD as B64_STD;
 use base64::Engine;
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Default)]
@@ -29,26 +30,49 @@ pub struct ExchangeInputs<'a> {
 /// a populated `TokenResponse` with fields extracted via RFC 6901 pointers
 /// from `response_map`.
 pub fn exchange(inputs: ExchangeInputs<'_>) -> Result<TokenResponse, String> {
-    let body_encoding = inputs.method.token.body_encoding.as_str();
-    let client_auth = inputs.method.token.client_auth.as_str();
-
-    let mut params: Vec<(String, String)> = vec![
+    let grant_params: Vec<(String, String)> = vec![
         ("grant_type".into(), "authorization_code".into()),
         ("code".into(), inputs.code.into()),
         ("redirect_uri".into(), inputs.redirect_uri.into()),
         ("code_verifier".into(), inputs.code_verifier.into()),
     ];
+    post_token_request(
+        inputs.method,
+        inputs.client_id,
+        inputs.client_secret,
+        grant_params,
+    )
+}
+
+/// Shared OAuth token-endpoint POST. Both authorization_code exchange and
+/// refresh_token refresh share the same descriptor mechanics (body_encoding,
+/// client_auth, response_map); callers supply only the grant-specific
+/// parameters and this helper attaches client credentials per `client_auth`.
+pub(crate) fn post_token_request(
+    method: &OAuth2AuthMethod,
+    client_id: &str,
+    client_secret: Option<&str>,
+    grant_specific_params: Vec<(String, String)>,
+) -> Result<TokenResponse, String> {
+    // Refuse to leak refresh_token / client_secret to a cleartext endpoint.
+    // Validate the URL BEFORE we compose any sensitive payload so a misrouted
+    // descriptor fails closed. Loopback http is allowed for the unit tests'
+    // mock servers.
+    let safe_url = validated_token_url(&method.token.url)?;
+
+    let body_encoding = method.token.body_encoding.as_str();
+    let client_auth = method.token.client_auth.as_str();
 
     let use_basic = match client_auth {
         "basic" => true,
-        "body" => false,
-        "either" => false,
+        "body" | "either" => false,
         other => return Err(format!("unsupported client_auth: {}", other)),
     };
 
+    let mut params = grant_specific_params;
     if !use_basic {
-        params.push(("client_id".into(), inputs.client_id.into()));
-        if let Some(s) = inputs.client_secret {
+        params.push(("client_id".into(), client_id.into()));
+        if let Some(s) = client_secret {
             params.push(("client_secret".into(), s.into()));
         }
     }
@@ -58,16 +82,16 @@ pub fn exchange(inputs: ExchangeInputs<'_>) -> Result<TokenResponse, String> {
         .build()
         .map_err(|e| format!("failed to build HTTP client: {}", e))?;
 
-    let mut req = client.post(&inputs.method.token.url);
+    let mut req = client.post(safe_url);
 
     if use_basic {
-        let secret = inputs.client_secret.unwrap_or("");
-        let encoded = B64_STD.encode(format!("{}:{}", inputs.client_id, secret));
+        let secret = client_secret.unwrap_or("");
+        let encoded = B64_STD.encode(format!("{}:{}", client_id, secret));
         req = req.header("Authorization", format!("Basic {}", encoded));
     }
 
     req = req.header("Accept", "application/json");
-    if let Some(extra) = &inputs.method.token.extra_headers {
+    if let Some(extra) = &method.token.extra_headers {
         for (k, v) in extra {
             req = req.header(k.as_str(), v.as_str());
         }
@@ -99,10 +123,43 @@ pub fn exchange(inputs: ExchangeInputs<'_>) -> Result<TokenResponse, String> {
         ));
     }
 
-    let value: Value = serde_json::from_str(&text)
-        .map_err(|e| format!("token response is not JSON: {} ({})", e, text))?;
+    parse_token_response(&text, &method.token.response_map)
+}
 
-    let rm = &inputs.method.token.response_map;
+/// Reject token endpoints that would transmit OAuth credentials (refresh_token,
+/// client_secret, authorization_code) over cleartext. Mirrors the loopback
+/// allowance in `commands/send.rs::validated_send_url` so unit tests can run a
+/// mock server on `http://127.0.0.1:NNNN/token`.
+fn validated_token_url(raw_url: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(raw_url)
+        .map_err(|_| format!("invalid OAuth token endpoint URL: {}", raw_url))?;
+
+    if url.scheme() == "https" {
+        return Ok(url);
+    }
+    if url.scheme() == "http" {
+        if let Some(host) = url.host_str() {
+            let normalized = host.trim_start_matches('[').trim_end_matches(']');
+            let is_loopback = normalized.eq_ignore_ascii_case("localhost")
+                || normalized
+                    .parse::<IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false);
+            if is_loopback {
+                return Ok(url);
+            }
+        }
+    }
+
+    Err(format!(
+        "Refusing to POST OAuth credentials to a non-HTTPS token endpoint: {}",
+        raw_url
+    ))
+}
+
+fn parse_token_response(text: &str, rm: &ResponseMap) -> Result<TokenResponse, String> {
+    let value: Value = serde_json::from_str(text)
+        .map_err(|e| format!("token response is not JSON: {} ({})", e, text))?;
 
     let access_token = pick_string(&value, &rm.access_token).ok_or_else(|| {
         format!(
@@ -169,6 +226,52 @@ mod tests {
     };
     use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn validated_token_url_accepts_https() {
+        assert!(validated_token_url("https://accounts.google.com/o/oauth2/token").is_ok());
+    }
+
+    #[test]
+    fn validated_token_url_accepts_loopback_http() {
+        for url in [
+            "http://localhost:9876/token",
+            "http://127.0.0.1:9876/token",
+            "http://[::1]:9876/token",
+        ] {
+            assert!(
+                validated_token_url(url).is_ok(),
+                "{} should be allowed",
+                url
+            );
+        }
+    }
+
+    #[test]
+    fn validated_token_url_rejects_remote_http() {
+        let err = validated_token_url("http://accounts.example.com/token").unwrap_err();
+        assert!(err.contains("non-HTTPS token endpoint"));
+    }
+
+    #[test]
+    fn validated_token_url_rejects_unparseable() {
+        let err = validated_token_url("not a url").unwrap_err();
+        assert!(err.contains("invalid OAuth token endpoint URL"));
+    }
+
+    #[test]
+    fn post_token_request_refuses_cleartext_remote_endpoint() {
+        let mut method = make_method("https://placeholder/", "form", "body");
+        method.token.url = "http://accounts.example.com/token".into();
+        let err = post_token_request(
+            &method,
+            "cid",
+            Some("csec"),
+            vec![("grant_type".into(), "refresh_token".into())],
+        )
+        .unwrap_err();
+        assert!(err.contains("non-HTTPS token endpoint"));
+    }
 
     fn make_method(token_url: &str, body_encoding: &str, client_auth: &str) -> OAuth2AuthMethod {
         OAuth2AuthMethod {

@@ -223,6 +223,13 @@ pub fn provider_for_site(site: &str) -> Option<String> {
     load_provider_pointer(&home(), site)
 }
 
+/// Canonical on-disk path for this site's `auth.yaml`. Two sites share auth
+/// iff they resolve to the same path — useful as a dedupe key when a
+/// rotating refresh_token must not be spent twice against the same file.
+pub fn auth_storage_path(site: &str) -> PathBuf {
+    auth_file(&home(), site)
+}
+
 pub fn logout(site: &str) -> Result<(), Box<dyn std::error::Error>> {
     logout_in(&home(), site)
 }
@@ -402,12 +409,12 @@ pub fn referenced_sites(inputs: &[&str]) -> Vec<String> {
 
 // ---------- File IO helpers ----------
 
-fn load_auth_from(base: &Path, site: &str) -> Option<AuthFile> {
+pub(crate) fn load_auth_from(base: &Path, site: &str) -> Option<AuthFile> {
     let content = fs::read_to_string(auth_file(base, site)).ok()?;
     serde_yaml::from_str(&content).ok()
 }
 
-fn save_auth_to(
+pub(crate) fn save_auth_to(
     base: &Path,
     site: &str,
     auth: &AuthFile,
@@ -429,7 +436,7 @@ fn save_site_auth_local_to(
     clear_provider_pointer_to(base, site)
 }
 
-fn load_app_from(base: &Path, site: &str) -> Option<AppConfig> {
+pub(crate) fn load_app_from(base: &Path, site: &str) -> Option<AppConfig> {
     let content = fs::read_to_string(app_file(base, site)).ok()?;
     serde_yaml::from_str(&content).ok()
 }
@@ -456,7 +463,11 @@ fn load_provider_app_from(base: &Path, provider: &str) -> Option<AppConfig> {
     serde_yaml::from_str(&content).ok()
 }
 
-fn save_app_to(base: &Path, site: &str, app: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn save_app_to(
+    base: &Path,
+    site: &str,
+    app: &AppConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     let yaml = serde_yaml::to_string(app)?;
     atomic_write(&app_file(base, site), yaml.as_bytes())
 }
