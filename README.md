@@ -1,6 +1,12 @@
 # Postagent
 
-A CLI that lets your AI agent call any API correctly. Natural-language search, structured manuals, pre-wired auth, and credentials that never enter the LLM context.
+**One CLI for every app your agent needs.**
+
+No more installing a new MCP server or CLI for each app your agent uses. Postagent connects your AI agent to any API — Notion, Linear, GitHub, Slack, and more.
+
+- 🔌 **No per-site setup** — one `npm install -g postagent` covers every supported API
+- 🔍 **Discover by intent** — `postagent search "create a doc on Notion"` instead of reading docs
+- 🔐 **Credentials stay local** — API keys are injected at send time, never leaked into the LLM context
 
 ## Install
 
@@ -42,9 +48,7 @@ postagent send https://api.github.com/user \
 
 The easiest way is to just tell your agent to use it:
 
-```
-Use postagent to make a marketing plan on Notion, then create and assign a task to me on Linear. Run postagent --help to see available commands.
-```
+![Postagent demo](./assets/demo.png)
 
 ## Configuration
 
