@@ -17,7 +17,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/actionbook/postagent.git",
+    "url": "git+https://github.com/Paul-Yuchao-Dong/postagent.git",
     "directory": "packages/postagent-win32-x64"
   }
 }

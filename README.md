@@ -1,4 +1,7 @@
-# Postagent
+# Postagent (with Windows support)
+
+> This fork adds native Windows x64 support to [actionbook/postagent](https://github.com/actionbook/postagent).
+> All credit to the original authors — this fork only adds the Windows platform target.
 
 **One CLI for every app your agent needs.**
 
@@ -16,23 +19,30 @@ Supports macOS (ARM64/x64), Linux (x64/ARM64), and Windows (x64).
 npm install -g postagent
 ```
 
-### Build from source (Windows)
+### Windows users
 
-On Windows, if the prebuilt binary is unavailable, you can compile from source:
+Until the Windows binary is published to npm, install directly from this fork:
 
-```bash
-# 1. Install Rust: https://rustup.rs
-# 2. Clone and build the native binary
-git clone https://github.com/actionbook/postagent.git
+```powershell
+# 1. Clone the fork
+git clone https://github.com/Paul-Yuchao-Dong/postagent.git
 cd postagent
+
+# 2. Compile the native Rust binary (requires Rust: https://rustup.rs)
 cargo build --release --manifest-path packages/postagent-core/Cargo.toml
 
-# 3. Place the binary where the CLI expects it
-mkdir -p packages/postagent-win32-x64/bin
-copy packages\postagent-core\target\release\postagent-core.exe packages\postagent-win32-x64\bin\
+# 3. Place the binary in the Windows platform package
+New-Item -ItemType Directory -Force -Path packages/postagent-win32-x64/bin
+Copy-Item packages/postagent-core/target/release/postagent-core.exe packages/postagent-win32-x64/bin/
 
-# 4. Link for development
+# 4. Install globally via npm
 npm install -g .
+```
+
+Or use the one-liner after cloning:
+
+```powershell
+git clone https://github.com/Paul-Yuchao-Dong/postagent.git; cd postagent; cargo build --release --manifest-path packages/postagent-core/Cargo.toml; New-Item -ItemType Directory -Force -Path packages/postagent-win32-x64/bin; Copy-Item packages/postagent-core/target/release/postagent-core.exe packages/postagent-win32-x64/bin/; npm install -g .
 ```
 
 ## Quickstart
